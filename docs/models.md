@@ -120,8 +120,10 @@ the two possible mistakes are not symmetric:
 So a catalogued model reports what its entry says, anything else is assumed
 capable, and the first real request settles it. An entry may only assert the
 negative when the *provider documents it* — currently just `deepseek-reasoner`.
-Vision and thinking are still guessed from a name, because being wrong there
-changes which controls the canvas offers, not how a request is made.
+Vision and thinking are still guessed from a name, for the same reason tools are
+assumed rather than denied: the guess is recoverable. A wrong thinking guess
+sends one parameter the server does not take and is corrected by the retry
+described below; a wrong vision guess only changes which controls are offered.
 
 The canvas reports where its answer came from, and only states a limitation it
 did not guess:
@@ -178,13 +180,75 @@ would silently degrade every agent in the deployment and hide the real problem.
 
 ---
 
+## Reasoning models
+
+A model that can think and is never asked to is an expensive model used badly.
+Detecting the capability and then sending a plain request is worse than not
+detecting it: the canvas says *thinking* while nothing about the call differs.
+
+The obstacle is that there is no agreed way to ask. The OpenAI wire format is
+near-universal for *messages* and completely unstandardised for *reasoning* —
+every server invented its own parameter, and sending the wrong one is a 400:
+
+| Backend | Parameter |
+| --- | --- |
+| OpenAI, LM Studio, Groq, Fireworks, LiteLLM, Together, Mistral | `reasoning_effort` |
+| OpenRouter | `reasoning: {effort}` |
+| Ollama | `think: true` |
+| vLLM, llama.cpp, TGI | `chat_template_kwargs: {enable_thinking: true}` |
+| DeepSeek reasoner | *nothing* — it reasons unconditionally, and asking is a 400 |
+
+`services/llm_proxy/reasoning.py` holds that table, and it is the whole extension
+point: a new backend is a row, not a provider class. A rejection is handled the
+same way a rejected tools request is — drop the parameter, retry immediately,
+stop asking:
+
+```
+complete/converse with the reasoning parameter
+   │
+   ├── 200 → the model thought. Keep what it thought.
+   │
+   └── 4xx that is *about* reasoning and says "unsupported"
+          │
+          ├── stop sending it on this provider (effort stops being offered)
+          └── retry immediately without it   ← the turn still succeeds
+```
+
+Two things follow from thinking being real rather than decorative:
+
+* **`effort` reaches open models now.** A thinking-capable model on a backend
+  with a depth parameter reports `supports_effort`, so the depth control on the
+  canvas does something instead of being reported as ignored. When the server
+  rejects the parameter, `supports_effort` goes false — but `supports_thinking`
+  stays true, because what the server refused was the *knob*, not the capability.
+* **The output budget grows.** Reasoning is spent from the same budget as the
+  answer, so a thinking model against a 4k ceiling can spend the whole allowance
+  thinking and return a truncated sentence. Requests that engage thinking get at
+  least 8192 tokens.
+
+What the model thought is **kept, not discarded**. It arrives in
+`reasoning_content`, `reasoning` or `thinking` depending on the server (and as
+`thinking` content blocks on Claude), and lands in three places: an
+`agent.reasoned` line in the live log, the full text on the step's context, and
+— when a model spends its whole budget thinking and returns no answer — as the
+step's output, which beats reporting silence.
+
+One deliberate exclusion: on the prompted tool protocol, a tool call is only
+read out of the *answer*, never out of the reasoning. A thinking model drafts and
+discards candidate calls while working, and invoking one of those would run a
+skill the model had already decided against.
+
+`CWAP_LLM_THINKING_MODE=off` turns the whole thing off deployment-wide.
+
+---
+
 ## Capabilities, and why the canvas changes shape
 
 Backends do not accept the same knobs, and the differences are not cosmetic:
 
 | Knob | Claude | Open models via OpenAI-compatible |
 | --- | --- | --- |
-| `effort` | supported | not a concept |
+| `effort` | supported | on thinking models whose server takes a depth parameter |
 | `temperature` | **rejected with a 400** | supported |
 | `max_tokens` | supported | supported |
 | tool calling | supported | **varies by model** — see above |

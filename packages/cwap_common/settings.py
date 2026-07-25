@@ -82,7 +82,11 @@ class Settings:
     # "auto" tries native tool calling and permanently downgrades to a prompted
     # JSON protocol if the server rejects it. "native" or "prompted" force one.
     llm_tool_mode: str = field(default_factory=lambda: _env("CWAP_LLM_TOOL_MODE", "auto"))
-    # Anthropic-only knob. Ignored (and reported as ignored) by other providers.
+    # "auto" engages a thinking-capable model's reasoning mode and permanently
+    # stops asking if the server rejects the parameter. "off" never asks.
+    llm_thinking_mode: str = field(default_factory=lambda: _env("CWAP_LLM_THINKING_MODE", "auto"))
+    # Reasoning depth. Honoured by Claude and by every thinking-capable model
+    # whose server takes a depth parameter; reported as ignored elsewhere.
     llm_effort: str = field(default_factory=lambda: _env("CWAP_LLM_EFFORT", "high"))
     # Sampling knob for open models. Rejected by current Claude models, so the
     # Anthropic provider drops it rather than sending a request that would 400.

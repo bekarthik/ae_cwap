@@ -73,6 +73,10 @@ class AgentResult:
     output_tokens: int = 0
     #: Memory entries consulted, so the outcome can reinforce or weaken them.
     recalled_memory_ids: list[str] = field(default_factory=list)
+    #: What the model thought before each turn, when it is a reasoning model and
+    #: the backend returned it. Carried beside `turns` rather than on `AgentTurn`,
+    #: which is a published contract and cannot grow a field without a version.
+    reasoning: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def iterations(self) -> int:
@@ -91,19 +95,22 @@ def run_agent(
     tools = [skill.tool_schema() for skill in skills]
 
     recalled = _recall(agent, objective, context)
-    system = _build_system_prompt(agent, recalled.text)
+    system = _build_system_prompt(agent, recalled.text, skills=skills)
 
     provider = get_provider()
     messages: list[ChatMessage] = [ChatMessage(role="user", content=objective)]
 
     turns: list[AgentTurn] = []
     used: list[str] = []
+    thought: list[dict[str, Any]] = []
     totals = [0, 0]
 
     for iteration in range(1, agent.max_iterations + 1):
         completion = _think(provider, messages, system, tools, agent, iteration, context)
         totals[0] += completion.input_tokens
         totals[1] += completion.output_tokens
+        if completion.reasoning:
+            thought.append({"iteration": iteration, "text": completion.reasoning})
 
         if not completion.tool_calls:
             turns.append(
@@ -122,6 +129,7 @@ def run_agent(
                 input_tokens=totals[0],
                 output_tokens=totals[1],
                 recalled_memory_ids=recalled.ids,
+                reasoning=thought,
             )
             _reflect(agent, objective, result, context)
             return result
@@ -169,6 +177,7 @@ def run_agent(
         input_tokens=totals[0],
         output_tokens=totals[1],
         recalled_memory_ids=recalled.ids,
+        reasoning=thought,
     )
     _reflect(agent, objective, result, context)
     return result
@@ -187,7 +196,7 @@ def _think(provider, messages, system, tools, agent, iteration, context):
         {"iteration": iteration, "skills_offered": len(tools)},
     )
     try:
-        return provider.converse(
+        completion = provider.converse(
             messages,
             system=system,
             tools=tools or None,
@@ -200,6 +209,28 @@ def _think(provider, messages, system, tools, agent, iteration, context):
         ) from exc
     except LLMProxyError as exc:
         raise AgentError(f"agent '{agent.name}' could not reach the model: {exc}") from exc
+
+    if completion.reasoning:
+        _emit(
+            context,
+            "agent.reasoned",
+            f"'{agent.name}' thought first: {_excerpt(completion.reasoning)}",
+            {"iteration": iteration, "reasoning": completion.reasoning},
+        )
+    return completion
+
+
+#: Reasoning runs long — often longer than the answer. The log line carries
+#: enough to see the direction the agent took; the whole of it is in the event
+#: data and on the step, where it can be read without flooding the stream.
+_REASONING_EXCERPT = 300
+
+
+def _excerpt(text: str) -> str:
+    condensed = " ".join(text.split())
+    if len(condensed) <= _REASONING_EXCERPT:
+        return condensed
+    return condensed[:_REASONING_EXCERPT].rstrip() + "…"
 
 
 def _invoke(
@@ -483,16 +514,43 @@ def remember_for_workflow(
 # ---------------------------------------------------------------------------
 
 
-def _build_system_prompt(agent: AgentDefinition, recalled: str) -> str:
-    parts = [
-        f"You are {agent.name}. {agent.role}",
-        "",
-        "Work by using the tools available to you. Call one, read its result, and "
-        "decide what to do next. When you have what you need, answer directly "
-        "instead of calling another tool.",
-        "",
-        "If a tool fails, read the error and try different arguments or a different "
-        "tool. Do not repeat a call that just failed the same way.",
+def _build_system_prompt(
+    agent: AgentDefinition, recalled: str, *, skills: list[SkillDefinition] | None = None
+) -> str:
+    """The agent's instructions, written for what it can actually do.
+
+    An agent with tools is told to establish things rather than recall them; an
+    agent with none is told the opposite, because instructing a model to "use
+    your tools" when it has none produces apologies for tools it cannot see, or
+    invented calls. The same prompt cannot honestly serve both.
+    """
+    parts = [f"You are {agent.name}. {agent.role}", ""]
+
+    if skills:
+        named = ", ".join(skill.name for skill in skills)
+        parts += [
+            "Work by using the tools available to you. Call one, read its result, and "
+            "decide what to do next. When you have what you need, answer directly "
+            "instead of calling another tool.",
+            "",
+            f"Your tools: {named}.",
+            "",
+            "Check rather than recall. If something the answer depends on could be "
+            "established with one of these tools, use it — even when you believe you "
+            "already know. What you remember may be out of date or may not apply here; "
+            "what a tool returns is about this case.",
+            "",
+            "If a tool fails, read the error and try different arguments or a different "
+            "tool. Do not repeat a call that just failed the same way.",
+        ]
+    else:
+        parts += [
+            "You have no tools for this task. Work from the material you have been "
+            "given, and say plainly where an answer would need something you cannot "
+            "reach from here.",
+        ]
+
+    parts += [
         "",
         "State plainly what you could not determine. Never invent a fact to fill a gap.",
     ]

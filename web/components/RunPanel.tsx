@@ -63,7 +63,11 @@ export function RunPanel({ status, logs, report, error }: Props) {
 
       <div className="log" ref={logRef}>
         {logs.map((event) => (
-          <div className={`log-line level-${event.level}`} key={`${event.seq}-${event.event}`}>
+          <div
+            className={`log-line level-${event.level}`}
+            data-event={event.event}
+            key={`${event.seq}-${event.event}`}
+          >
             <span className="log-line__seq">{event.seq}</span>
             <span className="log-line__event">{event.event}</span>
             <span className="log-line__msg">

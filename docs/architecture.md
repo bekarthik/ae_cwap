@@ -215,8 +215,9 @@ capabilities are inferred from its name, and anything the backend then rejects i
 handled at run time.
 
 The hard part is not transport, it is that backends accept genuinely different
-knobs: current Claude models *reject* `temperature` with a 400, and open models
-have no notion of `effort`. Each provider therefore declares
+knobs: current Claude models *reject* `temperature` with a 400, and a reasoning
+model's depth is asked for four different ways depending on whose server is in
+front of it. Each provider therefore declares
 `ProviderCapabilities`; `GET /api/runtime` reports them so the canvas renders
 only the controls that backend honours; a node keeps knobs meant for other
 backends so a workflow stays portable; and anything ignored at run time is logged
@@ -232,6 +233,14 @@ subject-plus-negation rather than a list of exact sentences, because every
 backend phrases it differently — and it is deliberately narrow on the subject,
 since mistaking a rejected API key for a missing capability would silently
 degrade every agent and hide the real problem.
+
+Reasoning works the same way, and for the same reason: `reasoning_effort`,
+`reasoning: {effort}`, `think: true` and `chat_template_kwargs` are four spellings
+of one idea, and sending the wrong one is a 400. `reasoning.py` holds the table,
+`_send` drops the parameter and retries once if the server refuses it, and what
+the model thought is kept — an `agent.reasoned` line in the run's log and the full
+text on the step — rather than discarded, since on a thinking model that is where
+most of the work is visible.
 
 ### An MCP tool is a skill, not a node type
 

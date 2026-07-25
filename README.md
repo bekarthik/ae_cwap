@@ -176,6 +176,7 @@ list. The ones that matter:
 | `CWAP_BROKER` | `memory` | `redis` (then run the worker separately) |
 | `CWAP_LLM_PROVIDER` | `stub` | `ollama`, `vllm`, `together`, `anthropic`, … |
 | `CWAP_LLM_TOOL_MODE` | `auto` | `native` or `prompted` to force one tool path |
+| `CWAP_LLM_THINKING_MODE` | `auto` | `off` to stop engaging reasoning models' thinking |
 | `CWAP_JWT_SECRET` | a known dev string | **required** in any deployment |
 | `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node or HTTP MCP server may reach |
 | `CWAP_MCP_ALLOWED_COMMANDS` | empty — stdio MCP servers disabled | commands a stdio MCP server may launch |
@@ -248,7 +249,8 @@ Two implementations cover everything: the Anthropic SDK, and one HTTP client for
 every backend speaking the OpenAI chat-completions format.
 
 Backends genuinely differ — current Claude models *reject* `temperature` with a
-400, and open models have no notion of `effort`. Rather than send a parameter
+400, and a reasoning model's depth is asked for four different ways depending on
+whose server is serving it. Rather than send a parameter
 that errors or silently drop one the user set, each provider declares its
 capabilities, the canvas renders only the controls that backend honours, and
 anything ignored at run time is logged and recorded on the step. A saved workflow
@@ -261,6 +263,12 @@ first agent turn sends `tools`; a rejection that names them downgrades that
 provider permanently to a **prompted JSON protocol** and retries immediately,
 rather than failing the turn. Agents therefore work on every backend, and the
 canvas says which path a step is on rather than implying they are equivalent.
+
+A reasoning model is asked to reason, in whichever dialect its server speaks, and
+a server that refuses the parameter costs one retried call. What it thought is
+kept and shown in the run report — on a thinking model that is usually where the
+work is. Agents are also told to *check rather than recall*: where a fact could be
+established with a tool they hold, using it beats answering from memory.
 
 ---
 

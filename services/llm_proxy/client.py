@@ -29,6 +29,7 @@ from typing import Any, Protocol
 
 from cwap_common.settings import get_settings
 
+from llm_proxy import reasoning
 from llm_proxy.catalogue import capabilities_for, is_catalogued
 from llm_proxy.presets import NATIVE_PROVIDERS, Preset, resolve
 
@@ -171,6 +172,10 @@ class LLMCompletion:
     output_tokens: int = 0
     #: Skills the model wants run before it can continue.
     tool_calls: tuple[ToolCallRequest, ...] = ()
+    #: The model's reasoning, when the backend returned it apart from the answer.
+    #: Kept rather than discarded: on a thinking model it is the most direct
+    #: evidence of *why* a step produced what it did.
+    reasoning: str = ""
     #: Options the caller asked for that this backend cannot honour. Recorded on
     #: the step so a run report never implies a knob took effect when it did not.
     ignored_options: tuple[str, ...] = ()
@@ -216,6 +221,17 @@ def _filter_options(
             ignored.append(name)
 
     return accepted, tuple(ignored)
+
+
+def _output_budget(requested: int, capabilities: ProviderCapabilities) -> int:
+    """Room for the answer — plus room to think, when the model will.
+
+    Reasoning is spent from the same output budget as the answer on every
+    backend that has one. A thinking model against a 4k ceiling can spend the
+    whole allowance thinking and return a truncated sentence, which reads as a
+    broken model rather than as a budget that was too small.
+    """
+    return reasoning.token_budget(requested) if capabilities.supports_thinking else requested
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +377,9 @@ class AnthropicProvider:
 
         request: dict[str, Any] = {
             "model": self.capabilities.model,
-            "max_tokens": options.max_tokens or settings.llm_max_tokens,
+            "max_tokens": _output_budget(
+                options.max_tokens or settings.llm_max_tokens, self.capabilities
+            ),
             "messages": [{"role": "user", "content": prompt}],
             "output_config": {"effort": effort},
             "betas": [self.FALLBACK_BETA],
@@ -404,6 +422,7 @@ class AnthropicProvider:
             stop_reason=getattr(response, "stop_reason", "end_turn") or "end_turn",
             input_tokens=getattr(usage, "input_tokens", 0) or 0,
             output_tokens=getattr(usage, "output_tokens", 0) or 0,
+            reasoning=_anthropic_thinking(response),
             ignored_options=ignored,
             metadata={"provider": "anthropic", "effort": effort},
         )
@@ -429,7 +448,9 @@ class AnthropicProvider:
 
         request: dict[str, Any] = {
             "model": self.capabilities.model,
-            "max_tokens": options.max_tokens or settings.llm_max_tokens,
+            "max_tokens": _output_budget(
+                options.max_tokens or settings.llm_max_tokens, self.capabilities
+            ),
             "messages": _to_anthropic_messages(messages),
             "output_config": {"effort": effort},
             "betas": [self.FALLBACK_BETA],
@@ -485,6 +506,7 @@ class AnthropicProvider:
             input_tokens=getattr(usage, "input_tokens", 0) or 0,
             output_tokens=getattr(usage, "output_tokens", 0) or 0,
             tool_calls=tuple(calls),
+            reasoning=_anthropic_thinking(response),
             ignored_options=ignored,
             metadata={"provider": "anthropic", "effort": effort},
         )
@@ -529,21 +551,30 @@ class OpenAICompatibleProvider:
                 "to a model your server has loaded"
             )
 
+        settings = get_settings()
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
         # "auto" tries native tool calling once and downgrades permanently on a
         # rejection; an operator can force either mode.
-        self._tool_mode = get_settings().llm_tool_mode
+        self._tool_mode = settings.llm_tool_mode
         tools, vision, thinking = capabilities_for(provider, model)
         source = "catalogue" if is_catalogued(provider, model) else "assumed"
         if self._tool_mode == "prompted":
             source = "configured"
+        # Engage the model's reasoning mode when it has one and this platform
+        # knows how to ask this server for it. Same shape as tool calling: try,
+        # and stop asking for good if the server says it does not take it.
+        self._thinking = (
+            thinking and reasoning.knows(provider) and settings.llm_thinking_mode != "off"
+        )
         self.capabilities = ProviderCapabilities(
             provider=provider,
             label=label or provider,
             model=model,
-            supports_effort=False,
+            # Effort is real here only when there is a reasoning mode to spend it
+            # on. Claiming otherwise would show a depth control that does nothing.
+            supports_effort=self._thinking,
             supports_temperature=True,
             supports_top_p=True,
             supports_stop_sequences=True,
@@ -561,65 +592,26 @@ class OpenAICompatibleProvider:
     def complete(
         self, prompt: str, *, system: str | None = None, options: GenerationOptions | None = None
     ) -> LLMCompletion:
-        import httpx  # noqa: PLC0415 - already a dependency; imported at call site
-
-        settings = get_settings()
         options = options or GenerationOptions()
-        accepted, ignored = _filter_options(options, self.capabilities)
+        _accepted, ignored = _filter_options(options, self.capabilities)
 
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        payload: dict[str, Any] = {
-            "model": self.capabilities.model,
-            "messages": messages,
-            "max_tokens": options.max_tokens or settings.llm_max_tokens,
-            "temperature": accepted.get("temperature", settings.llm_temperature),
-            "stream": False,
-        }
-        if "top_p" in accepted:
-            payload["top_p"] = accepted["top_p"]
-        if "stop" in accepted:
-            payload["stop"] = list(accepted["stop"])
+        payload = self._base_payload(options)
+        payload["messages"] = messages
 
-        headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        body = self._send(payload, tools_requested=False)
+        choice = body["choices"][0]
+        message = choice.get("message") or {}
+        finish_reason = choice.get("finish_reason") or "stop"
 
-        try:
-            with httpx.Client(timeout=self._timeout) as client:
-                response = client.post(
-                    f"{self._base_url}/chat/completions", json=payload, headers=headers
-                )
-        except httpx.ConnectError as exc:
-            raise LLMProxyError(
-                f"could not reach {self._base_url} — is the server running? ({exc})"
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise LLMProxyError(
-                f"{self.capabilities.label} did not respond within {self._timeout}s. "
-                "Local models on modest hardware are slow; raise CWAP_LLM_TIMEOUT."
-            ) from exc
-
-        if response.status_code >= 400:
-            raise LLMProxyError(self._explain_error(response))
-
-        try:
-            body = response.json()
-            choice = body["choices"][0]
-            text = (choice.get("message") or {}).get("content") or ""
-            finish_reason = choice.get("finish_reason") or "stop"
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise LLMProxyError(
-                f"{self.capabilities.label} returned an unexpected response shape: "
-                f"{response.text[:400]}"
-            ) from exc
-
-        # Some servers put reasoning in a separate field and leave content empty.
-        if not text:
-            text = (choice.get("message") or {}).get("reasoning_content") or ""
+        # Some servers return the reasoning separately and leave content empty —
+        # a truncated thinking response looks like silence otherwise.
+        thought = reasoning.extract(message)
+        text = message.get("content") or thought or ""
 
         usage = body.get("usage") or {}
         return LLMCompletion(
@@ -628,10 +620,12 @@ class OpenAICompatibleProvider:
             stop_reason=finish_reason,
             input_tokens=int(usage.get("prompt_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
+            reasoning=thought,
             ignored_options=ignored,
             metadata={
                 "provider": self.capabilities.provider,
                 "base_url": self._base_url,
+                "thinking": self._thinking,
                 # Surfaced so a truncated answer is visible in the run report
                 # rather than looking like the model simply stopped early.
                 "truncated": finish_reason == "length",
@@ -693,7 +687,7 @@ class OpenAICompatibleProvider:
             ]
             payload["tool_choice"] = "auto"
 
-        body = self._post(payload, tools_requested=bool(tools))
+        body = self._send(payload, tools_requested=bool(tools))
         choice = body["choices"][0]
         message = choice.get("message") or {}
 
@@ -708,17 +702,23 @@ class OpenAICompatibleProvider:
                 )
             )
 
+        thought = reasoning.extract(message)
         usage = body.get("usage") or {}
         return LLMCompletion(
-            text=message.get("content") or message.get("reasoning_content") or "",
+            # A model that asks for a tool often says nothing else, so an empty
+            # content field with tool calls is normal — but with neither, the
+            # reasoning is all there is, and it beats returning nothing.
+            text=message.get("content") or ("" if calls else thought),
             model=body.get("model") or self.capabilities.model,
             stop_reason=choice.get("finish_reason") or "stop",
             input_tokens=int(usage.get("prompt_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
             tool_calls=tuple(calls),
+            reasoning=thought,
             metadata={
                 "provider": self.capabilities.provider,
                 "tool_mode": "native",
+                "thinking": self._thinking,
                 "truncated": choice.get("finish_reason") == "length",
             },
         )
@@ -744,22 +744,29 @@ class OpenAICompatibleProvider:
             messages, _prompted_system(system, tools) if tools else system
         )
 
-        body = self._post(payload, tools_requested=False)
+        body = self._send(payload, tools_requested=False)
         choice = body["choices"][0]
-        text = (choice.get("message") or {}).get("content") or ""
+        message = choice.get("message") or {}
+        # The call is looked for in the answer only. A thinking model drafts and
+        # discards candidate calls while reasoning; acting on one of those would
+        # invoke a skill the model had already decided against.
+        text = message.get("content") or ""
+        thought = reasoning.extract(message)
 
         call = _parse_prompted_call(text, {tool["name"] for tool in tools}) if tools else None
         usage = body.get("usage") or {}
         return LLMCompletion(
-            text="" if call else text,
+            text="" if call else (text or thought),
             model=body.get("model") or self.capabilities.model,
             stop_reason=choice.get("finish_reason") or "stop",
             input_tokens=int(usage.get("prompt_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
             tool_calls=(call,) if call else (),
+            reasoning=thought,
             metadata={
                 "provider": self.capabilities.provider,
                 "tool_mode": "prompted",
+                "thinking": self._thinking,
                 "truncated": choice.get("finish_reason") == "length",
             },
         )
@@ -770,15 +777,51 @@ class OpenAICompatibleProvider:
         accepted, _ignored = _filter_options(options, self.capabilities)
         payload: dict[str, Any] = {
             "model": self.capabilities.model,
-            "max_tokens": options.max_tokens or settings.llm_max_tokens,
+            "max_tokens": _output_budget(
+                options.max_tokens or settings.llm_max_tokens, self.capabilities
+            ),
             "temperature": accepted.get("temperature", settings.llm_temperature),
             "stream": False,
         }
         if "top_p" in accepted:
             payload["top_p"] = accepted["top_p"]
+        if "stop" in accepted:
+            payload["stop"] = list(accepted["stop"])
+        if self._thinking:
+            effort = str(accepted.get("effort") or settings.llm_effort).lower()
+            payload.update(reasoning.request_fields(self.capabilities.provider, effort))
         return payload
 
-    def _post(self, payload: dict[str, Any], *, tools_requested: bool) -> dict[str, Any]:
+    def _send(self, payload: dict[str, Any], *, tools_requested: bool) -> dict[str, Any]:
+        """POST, and give up on the reasoning parameter if that is what was wrong.
+
+        The catalogue's view of which models think is a hint, and a local server
+        may be an older build that never learned the parameter. Rather than fail
+        the turn, the request is sent again without it and this provider stops
+        asking — one retried call, once, instead of a broken run.
+        """
+        try:
+            return self._post(
+                payload, tools_requested=tools_requested, reasoning_requested=self._thinking
+            )
+        except _ReasoningUnsupported:
+            self._thinking = False
+            # The model may still think unprompted, so `supports_thinking` stands;
+            # what this server has told us is that the *depth* cannot be asked for.
+            self.capabilities = replace(self.capabilities, supports_effort=False)
+            return self._post(
+                reasoning.strip(payload),
+                tools_requested=tools_requested,
+                reasoning_requested=False,
+            )
+
+    def _post(
+        self,
+        payload: dict[str, Any],
+        *,
+        tools_requested: bool,
+        reasoning_requested: bool = False,
+    ) -> dict[str, Any]:
         import httpx  # noqa: PLC0415
 
         headers = {"Content-Type": "application/json"}
@@ -802,6 +845,10 @@ class OpenAICompatibleProvider:
 
         if response.status_code >= 400:
             detail = self._explain_error(response)
+            # Reasoning first: dropping it costs nothing else, whereas a tools
+            # downgrade gives up native tool calling for the rest of the process.
+            if reasoning_requested and reasoning.looks_rejected(response.text):
+                raise _ReasoningUnsupported(detail)
             if tools_requested and _looks_like_tool_rejection(response):
                 raise _ToolsUnsupported(detail)
             raise LLMProxyError(detail)
@@ -1036,6 +1083,27 @@ class _ToolsUnsupported(LLMProxyError):
     Internal: it triggers a permanent downgrade to the prompted protocol rather
     than surfacing to the caller.
     """
+
+
+class _ReasoningUnsupported(LLMProxyError):
+    """The server rejected the request *because* it was asked to think.
+
+    Internal: it drops the reasoning parameter and retries, rather than
+    surfacing to the caller.
+    """
+
+
+def _anthropic_thinking(response: Any) -> str:
+    """The thinking blocks of a Claude response, joined.
+
+    Claude returns reasoning as `thinking` content blocks alongside the answer
+    rather than in a separate field, so it needs its own reader.
+    """
+    return "\n".join(
+        getattr(block, "thinking", "") or ""
+        for block in getattr(response, "content", None) or []
+        if getattr(block, "type", None) == "thinking"
+    ).strip()
 
 
 #: What the error has to be *about*. Without this, a rejected API key would

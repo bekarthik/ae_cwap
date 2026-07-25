@@ -317,6 +317,13 @@ Field rules:
   listed as available. Anything else you name will be built for it.
 - "rationale": why this agent exists, for a human reviewing the design.
 
+Checking beats recalling. Wherever a fact the work depends on could be looked up
+with one of the available capabilities — searching, fetching, reading a
+repository or a document — give that agent the capability and say in its
+objective that it must check rather than assume. An agent with no way to look
+anything up can only restate what the model already believed, which is the wrong
+answer whenever the goal turns on something specific or current.
+
 Between 1 and {max_agents} agents. Return only the JSON object.
 """.replace("{max_agents}", str(MAX_AGENTS))
 
@@ -409,6 +416,17 @@ def _plan_prompt(
             "Tools connected to this workspace, which agents can be given:\n"
             f"{tools}\n"
         )
+        # Named separately because they are the ones an agent can be pointed at
+        # freely: they cannot change anything, so an agent that should establish
+        # facts can be given them without the design demanding a write scope.
+        research = ", ".join(
+            sorted({skill.name for skill in connectors if skill.definition.get("read_only")})[:20]
+        )
+        if research:
+            parts.append(
+                "Of those, these only read, so any agent that needs to establish "
+                f"facts can be given them:\n{research}\n"
+            )
     else:
         parts.append("No external systems are connected to this workspace.\n")
 
@@ -704,6 +722,10 @@ def _matching_connectors(
 _READ_SIGNALS = (
     "repository", "repo", "codebase", "source", "file", "read", "search",
     "inspect", "review", "fetch", "look up",
+    # An agent whose job is to find things out is useless without something to
+    # find them out *with*, so researching counts as needing the outside world.
+    "research", "investigate", "verify", "check", "gather", "find out",
+    "documentation", "evidence",
 )
 _WRITE_SIGNALS = (
     "pull request", "merge", "commit", "push", "branch", "deploy", "publish",

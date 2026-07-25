@@ -319,6 +319,8 @@ def execute_agent(request: ExecutionRequest) -> ExecutionOutcome:
             "output_tokens": result.output_tokens,
             # The reasoning path, so the run report shows how it got there.
             "turns": [turn.model_dump(mode="json") for turn in result.turns],
+            # And, on a thinking model, what it worked through before each turn.
+            "reasoning": result.reasoning,
         },
     )
 

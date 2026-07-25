@@ -399,6 +399,13 @@ textarea {
   word-break: break-word;
 }
 
+/* A reasoning model's thinking is context, not progress — readable in the
+   stream without competing with the steps that actually did something. */
+.log-line[data-event='agent.reasoned'] .log-line__msg {
+  font-style: italic;
+  opacity: 0.85;
+}
+
 .log-line.level-ERROR .log-line__event {
   color: var(--danger);
 }

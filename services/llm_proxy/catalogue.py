@@ -219,8 +219,11 @@ CATALOGUE: dict[str, tuple[ModelCard, ...]] = {
 #: So tool support is only ever asserted from an explicit catalogue entry or from
 #: what the server actually did. See `capabilities_for`.
 #:
-#: Vision and thinking are safe to guess: being wrong changes which controls the
-#: canvas offers, not how a request is made.
+#: Vision and thinking are guessable for the same reason tools are assumed rather
+#: than denied: the guess is recoverable. A wrong thinking guess sends one
+#: reasoning parameter the server does not take, and `client._send` drops it,
+#: retries and stops asking. A wrong vision guess only changes which controls the
+#: canvas offers. Neither can strand a capable model on a worse path.
 #:
 #: Order matters — the first match wins, so put the specific before the broad.
 _HINTS: tuple[tuple[str, tuple[bool, bool]], ...] = (
@@ -233,6 +236,13 @@ _HINTS: tuple[tuple[str, tuple[bool, bool]], ...] = (
     ("qwq", (False, True)),
     ("thinking", (False, True)),
     ("deepseek-r1", (False, True)),
+    # Tagged local builds — `qwen3:14b`, `gpt-oss:20b` — never match a catalogue
+    # id exactly, and these families all ship a reasoning mode.
+    ("qwen3", (False, True)),
+    ("gpt-oss", (False, True)),
+    ("magistral", (False, True)),
+    ("o3-", (False, True)),
+    ("o4-mini", (False, True)),
     ("claude", (True, True)),
     ("gpt-4", (True, False)),
     ("gpt-5", (True, True)),
