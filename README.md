@@ -32,6 +32,12 @@ Register an account at `localhost:3000`. You land on three ways in:
 
 Press **Run** and watch each agent think, reach for skills, and hand over.
 
+Above those three, the workspace itself is drawn as a brain — every agent, skill,
+workflow, connected server and model backend, sized by how much of a thing each
+is and lit by how much it has learned. `/brain` opens it full screen; a workspace
+with nothing in it yet shows a plainly labelled example rather than an empty
+skull.
+
 ---
 
 ## What it does
@@ -43,7 +49,7 @@ Press **Run** and watch each agent think, reach for skills, and hand over.
 | **3 · Memory** | Reads what each agent and skill has learned, corrects it, uploads documents agents can search | `services/memory`, `services/knowledge` |
 | **4 · Execution & monitoring** | Presses Run, watches each agent think and reach for skills, reads a step-by-step report of *why* the answer came out that way | `services/orchestrator`, `services/agents` |
 
-Four properties are load-bearing throughout:
+These properties are load-bearing throughout:
 
 **The system designs the workflow; the user reviews it.** Someone who already
 knows which steps they need does not need this product, and someone who does not
@@ -65,8 +71,16 @@ are a human's decision, so they are reported as a gap instead.
 **Any model, any tool, chosen from the product.** The model backend is picked in
 the browser — the endpoint is asked what it actually serves, the configuration is
 tested with a real completion, and saving takes effect on the next run with no
-restart. Systems the platform has no connector for are reached through **MCP**: a
-tenant connects a server and its tools become skills agents can be given.
+restart. That is the workspace default; **any agent can name its own backend,
+model and thinking depth**, because a triage step and the synthesis step that
+someone actually reads do not want the same model. Systems the platform has no
+connector for are reached through **MCP**: a tenant connects a server and its
+tools become skills agents can be given.
+
+**Work can be checked before it is handed on.** Any step may be given a reviewer
+— another agent, with its own instructions — that either approves the output or
+sends it back with what to fix, up to five rounds. The graph contract rejects
+cycles, so the loop lives inside the step rather than as an edge that loops back.
 
 **A workflow that cannot execute cannot be saved.** Cycles, dangling edges,
 half-wired decisions, retrieval steps with no corpus and agent steps with no
@@ -157,7 +171,7 @@ services/
   orchestrator/       State machine, executors, worker, Celery entry point
   llm_proxy/          The only module that talks to a model, any vendor
 web/                  Next.js canvas (React Flow)
-tests/                592 tests, no external services required
+tests/                760 tests, no external services required
                       (and the same suite runs against PostgreSQL)
 deploy/               Container images
 docs/                 Architecture, contracts, model backends, epics
@@ -278,6 +292,17 @@ kept and shown in the run report — on a thinking model that is usually where t
 work is. Agents are also told to *check rather than recall*: where a fact could be
 established with a tool they hold, using it beats answering from memory.
 
+A model that can see is sent the picture. An image URL in a step's input becomes
+an image block rather than twenty-eight characters describing a chart — but only
+when the model reports vision, since image blocks to a text model are a 400 on
+most servers and silently dropped content on the rest.
+
+**Each agent may run somewhere else.** Open an agent and set its provider, model
+and thinking depth; leave them blank and it uses the workspace's. The credential
+comes from what the workspace saved *for that provider*, so a key entered for one
+backend is never sent to another's endpoint, and the editor says up front which
+backends this workspace can actually reach.
+
 ---
 
 ## Connecting to other systems (MCP)
@@ -332,23 +357,16 @@ Stated plainly, because each is a deliberate boundary rather than an oversight:
   credentials, which makes retrieval testable — but it matches wording, not
   meaning. Set `CWAP_EMBEDDING_PROVIDER` to a real embedding model for anything
   that cares about retrieval quality.
-- **Streaming token output is not plumbed through.** Model calls are
-  request/response, so a node's answer appears when the step finishes rather
-  than token by token. The log stream is live; the model output within a step is
-  not.
 - **Uploads are plain text only.** PDF and DOCX extraction belongs in its own
   service. Binary uploads are refused with an explanation rather than indexed as
   mojibake that would quietly poison every retrieval.
-- **Workflow design is a deterministic blueprint where one fits.** The
-  model sharpens each agent's role and objective against the actual goal but does
-  not choose how many agents there are or what they hand to each other. That is
-  deliberate: it makes the design reviewable (the same goal and answers give the
-  same shape) and portable (it works on a small local model, or the offline
-  stub). It also means a goal shaped unlike anything in
-  `services/design/blueprints.py` is handed to the model to plan instead —
-  validated against the same contracts, with the blueprint as the fallback. That
-  design is not repeatable the way a blueprint is, and the response says so. The
-  blueprints are data, so adding a shape is an entry, not a rewrite.
+- **A design is not repeatable between runs.** The model decides how many agents
+  a goal needs and what they hand to each other, so two identical requests can
+  come back with different teams. That is the cost of the count being a property
+  of the goal rather than of a blueprint, and the response says which way a given
+  design was produced. `services/design/blueprints.py` survives as a hint when
+  classification is confident and as a fallback when there is no usable model, so
+  the offline stub and small local models still get a coherent workflow.
 - **Reflection is mechanical, not introspective.** After a run an agent records
   which skills worked, which failed, and whether its budget was enough — things
   the runtime knows for certain. It does not ask the model to write its own
@@ -358,9 +376,10 @@ Stated plainly, because each is a deliberate boundary rather than an oversight:
   is a prompt, a retrieval, a transform, or an ordered composition of those. Any
   capability that genuinely needs to reach outside the platform is reported as a
   gap for a human to wire up with a credential and an allow-list entry.
-- **Parallel fan-out is not supported.** Only decision nodes branch, and the two
-  paths do not rejoin. Concurrent step execution is a real feature, not a
-  configuration flag, and the contract would need a join primitive.
+- **Fan-out is concurrent in the graph, not in wall-clock time.** Two branches
+  off one node are dispatched as independent jobs and rejoin at a barrier, so the
+  work is genuinely parallel across workers — but a single inline worker still
+  runs them one after another. More throughput is more workers.
 - **Migrations are not wired up.** `init_db()` creates tables; a deployment that
   outlives its first schema change needs Alembic. Concurrent workers racing to
   create the schema is handled (a Postgres advisory lock), but that is

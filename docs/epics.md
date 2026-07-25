@@ -230,7 +230,8 @@ Streaming details that matter in practice:
 
 | Deliverable | Status |
 | --- | --- |
-| Goal → clarifying questions → designed graph | Built, deterministic in structure, gap-reporting |
+| Goal → clarifying questions → designed graph | Built; the model plans the team, gap-reporting, blueprint as fallback |
+| Reusing an agent the workspace already has instead of planning a duplicate | Built, marked as reused in the design response |
 | Every working step staffed by an agent with skills and memory | Built |
 | Missing skills created and attached automatically | Built, declarative only |
 | Per-agent, per-skill and per-workflow memory that improves across runs | Built |
@@ -251,7 +252,12 @@ Streaming details that matter in practice:
 | Model catalogue and picker (tools / vision / thinking per model) | Built |
 | Embeddings from any OpenAI-compatible endpoint | Built; hashing is the offline default |
 | PostgreSQL | Supported (JSONB variants); SQLite is the default |
-| Parallel step execution | **Not built** — only decision branching |
-| Token-by-token streaming from a model | **Not built** — steps are request/response |
+| Editing an agent by hand — role, instructions, skills, model, depth | Built |
+| A different model or thinking depth per agent, within one workflow | Built; the credential follows the provider |
+| Images sent to models that can see them | Built, gated on the vision capability |
+| Quality loops — a second agent reviews a step, 1–5 rounds | Built inside the step, so the graph stays a DAG |
+| Parallel step execution | Built — fan-out dispatches a job per branch, joins wait for all of them |
+| The workspace drawn as one picture | Built — `GET /api/workspace/map`, rendered at `/brain` |
+| Token-by-token streaming from a model | Built — text appears as it is written, and the timeout measures silence |
 | Schema migrations | **Not built** — `init_db()` only |
 | Binary document extraction (PDF/DOCX) | **Not built** — refused with an explanation |

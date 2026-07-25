@@ -14,7 +14,7 @@ that proves it. If a row has no test, treat it as unimplemented.
 | --- | --- | --- |
 | Centrally versioned registry | `cwap_contracts.registry` — `Name@version` → model | `test_contracts.py::TestRegistryLock` |
 | Change requires a version bump | JSON-Schema fingerprints in `contracts.lock.json` | `test_every_registered_contract_matches_the_approved_lock` |
-| Versions coexist during a rollout | `v1` and `v2` both registered and resolvable | `test_both_versions_stay_registered` |
+| Versions coexist during a rollout | `v1` through `v4` all registered and resolvable | `test_both_versions_stay_registered` |
 | `run_id` | `WorkflowJobPayload.run_id` | `test_structurally_mandatory_fields` |
 | `step_execution_id` | `WorkflowJobPayload.step_execution_id` | ↑ |
 | `job_context` with tenant, user, permission scope | `JobContext` + `PermissionRequirement` | `TestJobContext` |
@@ -36,13 +36,31 @@ Two supporting choices:
 - `frozen=True` — a payload cannot be mutated after it crosses a boundary, so a
   worker can never "fix up" a message in place and hide a schema drift.
 
-### Adding agents was a version bump, not an edit
+### Every shape change has been a version bump, not an edit
 
 Agent nodes, skills, memory and the design conversation arrived as **v2**, added
 alongside v1 rather than modifying it. That is the gate working as intended: the
 fingerprint lock made changing `WorkflowGraph` in place impossible without an
 approved bump, so the change had to be a new version — which is also what lets a
 deployment mid-rollout hold workers on both.
+
+It has held for every change since. Four versions coexist:
+
+| Version | What it added | Why it could not be an edit |
+| --- | --- | --- |
+| `v1` | Jobs, graphs, the transition table | — |
+| `v2` | Agents, skills, memory, the design conversation | `WorkflowGraph` grew node types |
+| `v3` | MCP servers and their tools-as-skills | `SkillKind`/`SkillOrigin` grew an `MCP` member, and `SkillParameter` grew structured types |
+| `v4` | Fan-out, review loops, per-agent model choice, reuse | `WorkflowGraph` relaxed a rule; `AgentDefinition` and `PlannedAgent` grew fields |
+
+v4 is worth reading as a case: relaxing `_validate_branches` to permit fan-out
+*widens* what the contract accepts, which is exactly the kind of change that
+feels safe enough to make in place. It is not. A worker still running v3 would
+have accepted the graph and then dispatched only one of its branches, and the
+run would have hung at the join with nothing in the logs explaining why. The
+flag `ALLOW_FAN_OUT` is left in the source rather than deleted, because what it
+records is *why* the restriction existed: a permission the runtime cannot honour
+is worse than a restriction.
 
 Two contracts are deliberately narrower than they could be:
 

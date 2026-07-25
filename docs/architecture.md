@@ -27,26 +27,39 @@ Browser ──PUT /api/workflows/{id}──► Gateway ──► WorkflowGraph (
 ```
 
 Validation happens during request parsing. `WorkflowGraph` rejects duplicate ids,
-dangling edges, self-loops, multiple entry points, cycles, over-wide fan-out,
-outbound edges on a result node, retrieval steps with no corpus, and agent steps
-with no agent. A graph that would fail at run time therefore returns a 422 on
-save.
+dangling edges, self-loops, multiple entry points, cycles, two edges between the
+same pair of nodes, a branch that is not exactly one true and one false edge,
+outbound edges on a result node, retrieval steps with no corpus, agent steps with
+no agent, a review on a step that produces no answer, and a step that nominates
+itself as its own reviewer. A graph that would fail at run time therefore returns
+a 422 on save.
+
+A plain node *may* have several outgoing edges — that is parallel work, and each
+edge becomes its own job. It is a branch's two edges that are a choice.
 
 ### Designing a workflow from a goal
 
 ```
 Browser ──POST /api/design──► Gateway ──► design.design
                                              │
-                                    classify → blueprint
+                                   classify (for a hint)
                                              │
                               ┌──────────────┴──────────────┐
                      unanswered questions?            everything known
                               │                              │
                      CLARIFYING: what it                     ▼
-                     could not infer, each          plan agents from the
-                     with a stated reason           blueprint (structure)
-                              │                              │
-                          answers ─────────────►   model rewords them (wording)
+                     could not infer, each          model plans the team:
+                     with a stated reason           how many agents, what
+                              │                     each hands to the next
+                          answers ─────────────►            │
+                                                    match each against the
+                                                    agents this tenant has
+                                                             │
+                                              ┌──────────────┴──────────────┐
+                                        an existing agent            a new one
+                                              │                              │
+                                     reused, marked as such         planned fresh
+                                              └──────────────┬──────────────┘
                                                              │
                                                     resolve each agent's skills
                                                              │
@@ -61,14 +74,21 @@ Browser ──POST /api/design──► Gateway ──► design.design
 
 Two boundaries hold this together.
 
-**Structure is deterministic; only wording is model-generated.** A design that
-varied between identical requests could not be reviewed, and one that only
-appeared on a frontier model would make the platform's central promise
-conditional on which model you configured. So `design/blueprints.py` decides how
-many agents there are and what they hand to each other, and the model is asked
-only to sharpen each role and objective against the actual goal. Any failure —
-no model, bad JSON, the wrong number of agents — keeps the deterministic design,
-so the model call can only improve the result.
+**The plan is the model's; the validation is not.** How many agents a goal needs
+is a property of the goal (see *The goal decides the structure* below), so the
+model decides it and every plan is then checked against the same contracts as a
+hand-drawn graph. One bad agent rejects the whole plan — half a design is not a
+design — and the blueprint runs as the fallback, so a deployment on the offline
+stub still gets a coherent workflow.
+
+**An agent that already exists is reused, not duplicated.** A workspace that
+plans a fresh "Researcher" for every goal ends up with six of them, each with a
+sixth of the memory, and none getting better. `_agent_for` matches a planned
+agent to a stored one by name; the stored agent keeps its role and its memory and
+gains any skill the new plan needs, and the design response marks it `reused` so
+the user can see what they are getting rather than assuming it is new. Reuse
+never rewrites a role: an agent the user has tuned is not something a later
+design gets to overwrite.
 
 **Synthesis produces data, never code.** A capability the tenant lacks is built
 as a prompt, a retrieval over a corpus they already own, a text transform, or an
@@ -153,6 +173,10 @@ its own state row (with `source_service = BRANCH_EVALUATOR`, so the run report
 explains the path taken), and continues to the chosen successor. Every enqueued
 job therefore names one deterministic next step, and pathing is derived from the
 saved graph rather than chosen by a worker.
+
+Fan-out does not weaken this. A step with three outgoing edges enqueues three
+jobs, each naming one concrete node; what a payload never contains is a *choice*
+for the worker to make.
 
 ### Run context is rebuilt from the database, never carried in memory
 
@@ -351,6 +375,143 @@ decisions are the model's, somebody's bill is not.
 What this costs is repeatability. A design is no longer identical between runs,
 so the response says when it was planned rather than taken from a blueprint.
 
+### Fan-out, and the barrier that makes it safe
+
+v2 allowed exactly one outgoing edge from anything but a branch. That was the
+right first constraint — one successor per job is what makes a payload
+deterministic — and it also meant two unrelated pieces of work were done one
+after the other for no reason.
+
+v4 lets any node have several outgoing edges. **Each enqueued job still names
+exactly one node**, so the mandate is untouched; what changed is how many jobs a
+completed step may produce.
+
+```
+      ┌──► research ──┐
+start ┤               ├──► synthesise ──► output
+      └──► survey  ───┘
+              ▲                ▲
+        two jobs, two      a join: dispatched once,
+        workers            when every inbound path has landed
+```
+
+Three things had to hold before the contract could allow it:
+
+* **A join waits for all of its inbound paths.** `_join_ready` checks the
+  execution state for every inbound edge's source; a branch that arrives first
+  dispatches nothing.
+* **A join is dispatched exactly once.** Two branches finishing at the same
+  moment on two workers would both see the other's output committed.
+  `claim_dispatch` is an insert against a unique key, so precisely one wins and
+  the other returns without enqueuing.
+* **A join sees every branch's output, not just the one that woke it.**
+  `_joined_bindings` unions the bindings of all inbound edges and the context is
+  rebuilt from the run's committed state. Getting this wrong is not subtle — the
+  join fails with *template referenced undefined variable*, which is how it was
+  found.
+
+The cycle rule is unchanged and load-bearing. The graph is still a DAG, so a run
+still terminates.
+
+### Reviewing a step's work without a cycle
+
+A produce-check-correct loop is the single most reliable way to raise output
+quality, and drawn on a canvas it is a cycle — which the graph contract rejects,
+because termination would become a property of the model's judgement rather than
+of the structure.
+
+So the loop lives *inside* the step:
+
+```
+node executor ──► agent produces a draft
+                       │
+                       ▼
+                 reviewer agent reads it against the objective
+                       │
+              ┌────────┴────────┐
+        says APPROVED      says what is wrong
+              │                  │
+              ▼                  ▼
+        that is the answer   author revises  ──┐
+                                   ▲            │
+                                   └────────────┘
+                              up to max_rounds (1–5)
+```
+
+`ReviewConfig` names the reviewing agent, the round limit and the approval
+phrase. The reviewer is an agent rather than a prompt on purpose: it has its own
+skills and its own memory, so a reviewer gets better at reviewing the same way
+everything else here gets better. A step cannot review itself — an agent that
+wrote the draft approves it — and only a step that produces an answer can be
+reviewed at all.
+
+The round limit is a bound on cost, not an opinion about quality. A reviewer that
+never approves would otherwise spend a run's entire budget, and when the limit is
+reached the last draft stands with the review history recorded on the step, so
+the report says the work went out unapproved rather than implying it passed.
+
+### One model per agent
+
+`AgentDefinition` carries `model_provider`, `model_override` and
+`thinking_effort`. `runtime._provider_for` reads them:
+
+```
+agent names a backend?  ──yes──►  provider_for_choice(provider, model)
+        │                              │
+        no                    credential = what this tenant saved
+        │                              for *that* provider
+        ▼
+the workspace's provider
+```
+
+The fields existed on the contract, in the database and in the API response for
+two versions while nothing read them, which is worse than not offering them: a
+stored field that is ignored is a promise the product does not keep, and "mix
+models freely within one workflow" was that promise.
+
+A pinned provider — what the tests and the dev runner set — still wins over an
+agent's preference, so nothing routes around a deliberate override.
+
+### What a workflow remembers about itself
+
+Agent memory and skill memory were written after every run; workflow memory was
+read and never written. So the scope that should have accumulated *this
+workflow's* hard-won knowledge — which sources are worth checking, what the
+output is supposed to look like — stayed empty for the life of a workspace.
+
+A run that **succeeds** now writes its answer to the workflow's memory scope,
+condensed to `OUTCOME_EXCERPT` characters. Two limits do the work:
+
+* **Only the answer, and only on success.** A failed run's output is a symptom,
+  not a lesson; storing one teaches the next run to repeat it. Failures already
+  reach the agent and skill layers, which is where the actionable part of a
+  failure lives.
+* **An excerpt, not a transcript.** A scope that stores every output in full is a
+  transcript, and a transcript recalled into a later system prompt is a
+  context-window problem wearing a memory's clothes.
+
+Recording a lesson is never worth failing a run over, so the write is wrapped and
+a failure is logged rather than raised.
+
+### The workspace as one picture
+
+`GET /api/workspace/map` returns the tenant's agents, skills, workflows,
+connected servers and model backends as nodes, and the relationships between them
+as links — `holds`, `from`, `staffs`, `reviews`, `runs_on`. A node's size is how
+much of a thing it is (skills held, times invoked, steps in the graph, tools on
+the server); its glow is how much it has learned.
+
+Links pointing at anything the caller cannot see are dropped rather than rendered
+as a dangling edge, which matters more than it sounds: a workflow referencing an
+agent from another tenant must not become a visible node labelled with somebody
+else's name.
+
+The rendering (`web/components/Brain.tsx`, `web/lib/cortex.ts`) is a generated
+shell rather than a downloaded anatomical mesh — layered value noise over a
+sphere, a midline groove for the fissure, a cerebellum and a stem. A real mesh
+would look better and cost several megabytes plus a loading state on the first
+screen a new user sees.
+
 ### A token is a claim; the database is the truth
 
 `current_principal` confirms the identity a token names still exists in the
@@ -407,7 +568,7 @@ that does not say which column it meant.
 | `run_logs` | Durable copy of the streamed feed. `UNIQUE(run_id, seq)`. |
 | `dead_letters` | Parked messages with their precise failure reason. |
 | `documents` / `chunks` | Indexed corpora and their embeddings. |
-| `agents` | Stored agents: role, skills, iteration budget, memory settings, version. |
+| `agents` | Stored agents: role, skills, iteration budget, memory settings, the model backend and thinking depth this agent prefers, version. |
 | `skills` | Declarative capabilities, with their origin and reliability counters. |
 | `memories` | Every scope's learned entries, with accumulated usefulness. |
 

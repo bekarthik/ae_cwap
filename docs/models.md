@@ -54,6 +54,13 @@ export CWAP_LLM_API_KEY=...
 | `fireworks` | `https://api.fireworks.ai/inference/v1` |
 | `deepseek` | `https://api.deepseek.com/v1` |
 | `mistral` | `https://api.mistral.ai/v1` |
+| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `xai` | `https://api.x.ai/v1` |
+
+Gemini is reached through Google's own OpenAI-compatible endpoint rather than
+its native API. A second client implementation would buy nothing here: the
+compatibility layer carries tools, streaming and images, which is everything the
+platform asks a backend for.
 
 ### Anthropic
 
@@ -99,11 +106,15 @@ hosted one, and it means someone running entirely offline installs nothing extra
 Click the model chip in the canvas header. It lists every backend the platform
 knows — grouped into "on your own hardware" and "hosted" — the models each
 commonly serves, and what each of those can do: tool calling, vision, a reasoning
-mode. Selecting one shows the exact settings to apply.
+mode. **Detect models** asks the endpoint what it actually serves, **Test** spends
+one real completion to prove the configuration works, and saving applies to the
+next run with nothing restarted.
 
-It shows those settings rather than applying them. The provider is process-wide
-server configuration, and a browser session switching model underneath other
-people's in-flight runs is not something a page should be able to do.
+The choice is stored per tenant, not per process, which is what makes it safe to
+offer in a browser: one workspace switching backend cannot move anyone else's
+in-flight runs. The environment variables above remain the deployment default for
+any tenant that has not chosen. Credentials are stored per provider and
+encrypted, so a key entered for one backend is never sent to another's endpoint.
 
 The catalogue in `services/llm_proxy/catalogue.py` is a hint, never a gate. An
 unlisted model still runs — so a private fine-tune is one keystroke away in the
@@ -134,6 +145,68 @@ did not guess:
 | `catalogue` | The model is listed and its entry says so | Yes — "does not support native tool calling" |
 | `configured` | An operator set `CWAP_LLM_TOOL_MODE=prompted` | Yes — as a deployment setting, not a model limitation |
 | `assumed` | Nobody has checked yet | **No** |
+
+---
+
+## One model per agent
+
+The workspace setting is a default, not a ceiling. Any agent can name its own
+backend, its own model and its own thinking depth, and the ones that name nothing
+keep running on the workspace's — so adding this changed no existing workflow.
+
+```
+agent.model_provider = "ollama"      → this step runs on the local box
+agent.model_override = "llama3.1"
+agent.thinking_effort = "low"
+```
+
+It matters because the steps in one workflow are not the same job. Triage is
+cheap, high-volume and wants a small local model at `low`; the synthesis step at
+the end is the one anybody reads, and wants the best model available at `high`.
+A single workspace setting has to be one or the other, and picking either makes
+the workflow worse somewhere.
+
+Three rules make mixing safe:
+
+* **The credential follows the provider.** `store.credential_for(tenant,
+  provider)` returns what that tenant saved *for that backend*, and nothing else.
+  A key entered for OpenAI is never sent to Together because an agent happened to
+  name Together.
+* **A pinned provider still wins.** Tests and the dev runner set the provider
+  directly; an agent's preference does not route around that.
+* **A backend with no credential is flagged before the run, not during it.** The
+  agent editor asks the workspace which providers it can actually reach and says
+  so under the model field, because discovering a missing key when a five-step
+  run reaches step four is the expensive way to find out.
+
+The agent editor exposes all three fields, and so does `POST /api/agents` — an
+unknown effort is a 422 at the contract, not a 500 at the provider.
+
+---
+
+## Vision
+
+`supports_vision` was detected, stored and displayed for two versions while no
+request ever carried an image: a step whose input was
+`https://example.com/chart.png` sent the model that sentence, twenty-eight
+characters describing a picture it could have read.
+
+Now an image URL in a message becomes an image block — `image_url` on
+OpenAI-compatible servers, `image` with a URL source on Claude — under two
+constraints:
+
+* **Only when the model can see.** Image blocks to a text-only model are a 400 on
+  most servers and silently dropped content on the rest, so this is gated on the
+  capability already tracked.
+* **Only what looks like an image.** The match is on an image extension, not on
+  "is a URL", and the URL stays in the text as well: the model sees the picture
+  *and* knows where it came from.
+
+Nothing is downloaded here. The URL goes to the provider, which hands it to the
+model's own fetcher — a platform that pulled the bytes itself would be making an
+outbound request to a user-supplied address, which is precisely the hole the
+egress allow-list exists to close. Six images per message is the cap; past that a
+step is mostly pictures, and that is a cost decision rather than a formatting one.
 
 ---
 
