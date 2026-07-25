@@ -44,6 +44,7 @@ import type {
 import { DesignModal } from './DesignModal';
 import { Inspector } from './Inspector';
 import { ConnectorPanel } from './ConnectorPanel';
+import { Launcher } from './Launcher';
 import { ModelPicker } from './ModelPicker';
 import { KnowledgePanel } from './KnowledgePanel';
 import { RosterPanel } from './RosterPanel';
@@ -119,6 +120,9 @@ function BuilderInner({ session, onSignOut }: Props) {
   const [skills, setSkills] = useState<SkillDefinition[]>([]);
   const [goalOpen, setGoalOpen] = useState(false);
   const [modelsOpen, setModelsOpen] = useState(false);
+  // Shown on arrival, because an empty canvas answers none of the questions a
+  // new user has. Dismissed for the session once they have chosen a way in.
+  const [launcherOpen, setLauncherOpen] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -422,6 +426,9 @@ function BuilderInner({ session, onSignOut }: Props) {
           <BackendChip runtime={runtime} onOpen={() => setModelsOpen(true)} />
         ) : null}
 
+        <button className="btn" onClick={() => setLauncherOpen(true)}>
+          New workflow
+        </button>
         <button className="btn" onClick={() => setGoalOpen(true)}>
           Describe a goal
         </button>
@@ -489,7 +496,7 @@ function BuilderInner({ session, onSignOut }: Props) {
               style={{ marginTop: 6 }}
               onClick={() => applyGraph(emptyGraph())}
             >
-              New workflow
+              Blank canvas
             </button>
           </div>
         </aside>
@@ -565,6 +572,32 @@ function BuilderInner({ session, onSignOut }: Props) {
           <RunPanel status={runStatus} logs={logs} report={report} error={runError} />
         </aside>
       </div>
+
+      {launcherOpen ? (
+        <Launcher
+          onDescribeGoal={() => {
+            setLauncherOpen(false);
+            setGoalOpen(true);
+          }}
+          onBlankCanvas={() => {
+            applyGraph(emptyGraph());
+            setLauncherOpen(false);
+            setNotice('Empty canvas. Add a step from the left, then draw connections.');
+          }}
+          onUseTemplate={async (key) => {
+            const instantiated = await api.useTemplate(key);
+            applyGraph(instantiated.graph);
+            setLauncherOpen(false);
+            // The template just created agents and possibly skills; the roster
+            // and the Inspector's picker have to see them immediately.
+            void refreshLists();
+            setNotice(
+              `“${instantiated.graph.name}” is yours to edit — ${instantiated.notes[0] ?? ''}`,
+            );
+          }}
+          onDismiss={() => setLauncherOpen(false)}
+        />
+      ) : null}
 
       {modelsOpen ? (
         <ModelPicker

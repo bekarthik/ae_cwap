@@ -808,3 +808,92 @@ button.status-pill {
   border-color: transparent;
   color: var(--danger);
 }
+
+/* ---- launcher --------------------------------------------------------- */
+
+.launcher {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.launcher__card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.launcher__card:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* The recommended route, marked so the eye lands on it first. */
+.launcher__card--primary {
+  border-color: var(--accent);
+}
+
+.launcher__icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+}
+
+.launcher__blurb {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.launcher__hint {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.template {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.template__head {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+}
+
+.template__head:hover {
+  background: var(--surface-2);
+}
+
+.template__body {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+@media (max-width: 720px) {
+  .launcher {
+    grid-template-columns: 1fr;
+  }
+}

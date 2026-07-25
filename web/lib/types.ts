@@ -90,6 +90,34 @@ export interface DesignResponse {
   notes: string[];
 }
 
+/* -- templates ---------------------------------------------------------- */
+
+export interface TemplateAgentSummary {
+  name: string;
+  rationale: string;
+  skills: string[];
+}
+
+export interface TemplateSummary {
+  key: string;
+  title: string;
+  summary: string;
+  detail: string;
+  category: string;
+  input_label: string;
+  example_input: string;
+  agents: TemplateAgentSummary[];
+  /** What is missing before this would do what it says. */
+  requires: string[];
+  tags: string[];
+}
+
+export interface InstantiatedTemplate {
+  graph: WorkflowGraph;
+  agents: PlannedAgent[];
+  notes: string[];
+}
+
 /* -- agents, skills and memory ----------------------------------------- */
 
 export interface AgentMemoryConfig {

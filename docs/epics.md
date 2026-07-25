@@ -17,6 +17,29 @@ touches the canvas.
 | Skill gap analysis | `skills.registry.ensure_capability` | `SkillDefinition` + whether it had to be created |
 | Agent recommendation | `design.blueprints` + `design._plan_agents` | `PlannedAgent` — name, role, objective, skills, **rationale** |
 
+### Three ways in
+
+An empty canvas answers none of the questions a new user has, and "describe a
+goal" assumes you can articulate one. So the launcher offers three routes,
+matched to how much certainty someone arrives with:
+
+| Route | Best when | What it does |
+| --- | --- | --- |
+| Describe what you need | You know the outcome, not the steps | The design conversation below |
+| Start from a template | You do not yet know what this can do | Copies a working workflow into your workspace |
+| Build it yourself | You already know the steps | An empty canvas |
+
+Templates are data, instantiated per tenant — agents created, skills resolved or
+built, a fresh memory scope — so copying one gives you your own agents to edit
+rather than a shared object that changes under other people. Each declares its
+prerequisites, checked against your workspace and shown before you copy: a
+template that quietly produces a workflow failing on its third step is worse than
+one that says "upload something first".
+
+**Verify:** `tests/test_templates.py`, including a parametrised test that every
+template in the catalogue runs end to end on the offline stub — the claim a
+template makes is "this works".
+
 ### User Story 2 — goal input
 
 > As a beginner workflow creator, I want to input a simple, high-level goal, so
@@ -219,6 +242,10 @@ Streaming details that matter in practice:
 | Idempotency, 2PC external calls, transactions | Built |
 | Redis/Celery transport | Built (abstraction + Celery entry point; in-memory is the default) |
 | Any model backend — local open-weight, self-hosted, or hosted | Built, capability-aware |
+| Choosing provider and model from the browser, no restart | Built, per tenant, credentials encrypted |
+| Auto-detecting what an endpoint actually serves | Built, with a real test call before saving |
+| MCP connectors — any server, tools become skills | Built, stdio and streamable HTTP |
+| Three canvas entry points, with a template catalogue | Built |
 | Agents on models with no tool calling | Built — automatic downgrade to a prompted protocol |
 | Model catalogue and picker (tools / vision / thinking per model) | Built |
 | Embeddings from any OpenAI-compatible endpoint | Built; hashing is the offline default |

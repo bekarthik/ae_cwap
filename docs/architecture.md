@@ -233,6 +233,49 @@ backend phrases it differently — and it is deliberately narrow on the subject,
 since mistaking a rejected API key for a missing capability would silently
 degrade every agent and hide the real problem.
 
+### An MCP tool is a skill, not a node type
+
+Connecting an MCP server could have been a new node type, a new executor and a
+new place for failures to be handled. Making it a *skill* means none of that:
+an agent is given it the same way, the model sees it in the same tool list,
+failures come back to the agent the same way, the per-skill memory accrues the
+same lessons, and the write-scope check already knows to ask.
+
+The cost is one contract version bump — `SkillKind` could not gain a value
+without one — and that is the versioning discipline working rather than a
+workaround for it. v3 redefines only the skill contracts and re-exports the rest.
+
+Two things real servers forced rather than being chosen:
+
+* Parameters may be objects and arrays. A `create_pull_request` taking a list of
+  labels is unusable if arguments flatten to strings.
+* The server's own JSON schema is handed to the model verbatim. A paraphrase
+  drifts from what the server validates against, and the model is told a shape
+  that then gets rejected.
+
+Sessions are held open on one background event loop and reused; a process per
+tool call would make a three-tool agent start three subprocesses. Each connection
+is owned by a single task that both opens and closes it, because anyio task
+groups may only be exited from the task that entered them — closing from
+elsewhere left the subprocess running.
+
+### The model backend is chosen per tenant, at call time
+
+A workflow author comparing a local Llama against a hosted Claude wants to try
+one, look at the result, and try the other. So a tenant's choice is stored and
+`get_provider()` resolves it per call.
+
+Reaching the call was the interesting part. A skill deep inside an agent loop
+asks for a provider and has no tenant argument; threading one through every
+signature would touch every executor for a concern none of them own. A context
+variable fits: the worker sets it once from the job's `job_context.tenant_id`,
+and everything under that step resolves the right backend without knowing it
+happened. It is set and reset around **one step**, so a fungible worker moving to
+another tenant's job cannot inherit the previous tenant's endpoint or credential.
+Environment configuration remains the deployment default and the fallback, and
+the store is failure-tolerant — a model call must still work before the schema
+exists and in a process with no database.
+
 ### Egress is default-deny
 
 An HTTP node is user-authored content executed server-side. Without an allow-list

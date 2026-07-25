@@ -46,10 +46,22 @@ export function ModelPicker({ onClose, onSaved }: Props) {
     try {
       const loaded = await api.modelConfig();
       setConfig(loaded);
-      const initial = loaded.stored?.provider ?? loaded.active.provider;
+
+      // The running provider may not be one of the offered presets — `stub` is
+      // the default and is deliberately not in the list, since nobody chooses
+      // it. Falling back to the first option keeps the right-hand pane
+      // populated instead of opening on an empty column.
+      const running = loaded.stored?.provider ?? loaded.active.provider;
+      const known = loaded.providers.some((entry) => entry.key === running);
+      const initial = known ? running : (loaded.providers[0]?.key ?? '');
+
       setProvider(initial);
-      setModel(loaded.stored?.model ?? loaded.active.model ?? '');
-      setBaseUrl(loaded.stored?.base_url ?? '');
+      setModel(
+        known
+          ? (loaded.stored?.model ?? loaded.active.model ?? '')
+          : (loaded.providers[0]?.default_model ?? ''),
+      );
+      setBaseUrl(known ? (loaded.stored?.base_url ?? '') : '');
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not load model settings.');
     }

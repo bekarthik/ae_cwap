@@ -16,6 +16,7 @@ from api_gateway.routers import (
     runs,
     runtime,
     skills,
+    templates,
     workflows,
 )
 
@@ -31,6 +32,7 @@ ALL_ROUTERS = (
     knowledge.router,
     runs.router,
     runtime.router,
+    templates.router,
     admin.router,
 )
 
@@ -47,5 +49,6 @@ __all__ = [
     "runs",
     "runtime",
     "skills",
+    "templates",
     "workflows",
 ]

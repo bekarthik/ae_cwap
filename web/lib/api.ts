@@ -9,6 +9,8 @@
 
 import type {
   AgentDefinition,
+  InstantiatedTemplate,
+  TemplateSummary,
   MCPPolicy,
   MCPServerConfig,
   MCPServerRecord,
@@ -194,6 +196,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ goal, answers: {}, knowledge_handles: knowledgeHandles }),
     }),
+
+  /** Templates on offer, with prerequisites checked against this workspace. */
+  listTemplates: () => request<TemplateSummary[]>('/api/templates'),
+
+  /** Create this workspace's own copy of a template. */
+  useTemplate: (key: string) =>
+    request<InstantiatedTemplate>(`/api/templates/${key}`, { method: 'POST' }),
 
   listAgents: () => request<AgentDefinition[]>('/api/agents'),
 

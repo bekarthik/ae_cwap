@@ -23,9 +23,14 @@ make api    # http://localhost:8000  (gateway + inline worker)
 make web    # http://localhost:3000  (canvas)
 ```
 
-Register an account at `localhost:3000`, click **Describe a goal**, type
-*"Plan my weekend trip to Denver"*, answer the one or two things it asks, and
-press **Run**.
+Register an account at `localhost:3000`. You land on three ways in:
+
+* **Describe what you need** — say it in plain language; the system asks what it
+  cannot infer, decides the steps, and staffs each with an agent.
+* **Start from a template** — five that run as given. Copy one and change it.
+* **Build it yourself** — an empty canvas, if you already know the steps.
+
+Press **Run** and watch each agent think, reach for skills, and hand over.
 
 ---
 
@@ -33,7 +38,7 @@ press **Run**.
 
 | Epic | What the user sees | Where it lives |
 | --- | --- | --- |
-| **1 · Requirement diagnosis** | States a goal, answers a couple of questions, reviews the agents the system decided on | `services/design` |
+| **1 · Requirement diagnosis** | States a goal, answers a couple of questions, reviews the agents the system decided on — or copies a template | `services/design`, `services/templates` |
 | **2 · Visual builder** | Adjusts the design on a canvas, or assembles one by hand | `web/` |
 | **3 · Memory** | Reads what each agent and skill has learned, corrects it, uploads documents agents can search | `services/memory`, `services/knowledge` |
 | **4 · Execution & monitoring** | Presses Run, watches each agent think and reach for skills, reads a step-by-step report of *why* the answer came out that way | `services/orchestrator`, `services/agents` |
@@ -56,6 +61,12 @@ skill the tenant does not have, the platform creates it — as a prompt, a searc
 over documents the tenant already owns, or a text transform. Never code, and
 never an outbound call: those need a credential and an allow-listed host, which
 are a human's decision, so they are reported as a gap instead.
+
+**Any model, any tool, chosen from the product.** The model backend is picked in
+the browser — the endpoint is asked what it actually serves, the configuration is
+tested with a real completion, and saving takes effect on the next run with no
+restart. Systems the platform has no connector for are reached through **MCP**: a
+tenant connects a server and its tools become skills agents can be given.
 
 **A workflow that cannot execute cannot be saved.** Cycles, dangling edges,
 half-wired decisions, retrieval steps with no corpus and agent steps with no
@@ -137,6 +148,8 @@ packages/
 services/
   api_gateway/        Auth, routing, run reports, WebSocket log stream
   design/             The design conversation: questions, agents, the graph
+  templates/          Ready-made workflows, instantiated per tenant
+  mcp_connect/        MCP servers: policy, sessions, tools-as-skills
   agents/             The agent loop, and agent storage
   skills/             Built-in skills, synthesis of missing ones, execution
   memory/             Remember, recall, reinforce, prune — at every scope
@@ -144,7 +157,7 @@ services/
   orchestrator/       State machine, executors, worker, Celery entry point
   llm_proxy/          The only module that talks to a model, any vendor
 web/                  Next.js canvas (React Flow)
-tests/                388 tests, no external services required
+tests/                507 tests, no external services required
                       (and the same suite runs against PostgreSQL)
 deploy/               Container images
 docs/                 Architecture, contracts, model backends, epics
@@ -164,7 +177,9 @@ list. The ones that matter:
 | `CWAP_LLM_PROVIDER` | `stub` | `ollama`, `vllm`, `together`, `anthropic`, … |
 | `CWAP_LLM_TOOL_MODE` | `auto` | `native` or `prompted` to force one tool path |
 | `CWAP_JWT_SECRET` | a known dev string | **required** in any deployment |
-| `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node may reach |
+| `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node or HTTP MCP server may reach |
+| `CWAP_MCP_ALLOWED_COMMANDS` | empty — stdio MCP servers disabled | commands a stdio MCP server may launch |
+| `CWAP_SECRET_KEY` | falls back to the JWT secret | encrypts stored provider keys and MCP credentials |
 
 A production-shaped stack (Postgres, Redis, gateway, two workers, canvas):
 
@@ -222,9 +237,11 @@ RAG embeddings are configured the same way and independently, since a local
 export CWAP_EMBEDDING_PROVIDER=ollama CWAP_EMBEDDING_MODEL=nomic-embed-text
 ```
 
-In the canvas, click the model chip in the header to see every backend the
-platform knows, the models each commonly serves, and which of those have tool
-calling, vision or a reasoning mode.
+In the canvas, click the model chip in the header. Pick a provider, press
+**Detect models** to ask that endpoint what it actually serves, **Test** the
+configuration with one real completion, and save. It applies to your next run —
+nothing restarts, and the environment variables below remain the deployment
+default for anyone who has not chosen.
 
 `services/llm_proxy` is the only module in the codebase that talks to a model.
 Two implementations cover everything: the Anthropic SDK, and one HTTP client for
@@ -244,6 +261,38 @@ first agent turn sends `tools`; a rejection that names them downgrades that
 provider permanently to a **prompted JSON protocol** and retries immediately,
 rather than failing the turn. Agents therefore work on every backend, and the
 canvas says which path a step is on rather than implying they are equivalent.
+
+---
+
+## Connecting to other systems (MCP)
+
+An agent reaches a system nobody here wrote a connector for through the **Model
+Context Protocol**. Connect a server under *Connected systems*, and each tool it
+advertises becomes a skill an agent can be given — so an agent that can read a
+repository is an agent holding a skill, exactly like one that can summarise text.
+
+The two transports have very different blast radii and are gated separately:
+
+| Transport | What it is | Gate |
+| --- | --- | --- |
+| `http` | Streamable HTTP to a URL | `CWAP_HTTP_ALLOWLIST`, the same list an HTTP node uses |
+| `stdio` | The platform launches a process on the worker | `CWAP_MCP_ALLOWED_COMMANDS` — **empty by default** |
+
+stdio is off until an operator turns it on, because without that gate "connect an
+MCP server" is a remote shell with the worker's privileges. An allow-list entry
+matches either a bare command name resolved through `PATH`, or an exact absolute
+path — a bare entry deliberately does not authorise `/tmp/uploaded/npx`.
+
+```bash
+# Let this deployment run npx-based MCP servers
+export CWAP_MCP_ALLOWED_COMMANDS=npx
+export CWAP_HTTP_ALLOWLIST=api.github.com
+```
+
+A tool that can change something needs the same `WRITE_EXTERNAL` scope an HTTP
+node does and passes the same two-phase gate, so a redelivered step cannot open
+two pull requests. Tools a server marks read-only are exempt — reading a
+repository is not a side effect.
 
 ---
 
