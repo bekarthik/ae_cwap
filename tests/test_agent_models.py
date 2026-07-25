@@ -196,3 +196,55 @@ class TestItSurvivesStorage:
             json={"name": "X", "role": "Y", "thinking_effort": "enormous"},
         )
         assert response.status_code == 422
+
+
+class TestEditingOneThroughTheApi:
+    def test_a_full_save_from_the_editor_succeeds(self, client, auth):
+        """The editor sends every field, including the nested memory config —
+        which arrives as a plain dict and used to 500 on the way in."""
+        created = client.post(
+            "/api/agents",
+            headers=auth,
+            json={"name": "Analyst", "role": "You analyse."},
+        ).json()
+
+        saved = client.put(
+            f"/api/agents/{created['id']}",
+            headers=auth,
+            json={
+                "name": "Analyst",
+                "role": "You analyse carefully.",
+                "objective": "",
+                "instructions": "Always cite the source.",
+                "skill_ids": [],
+                "max_iterations": 8,
+                "model_provider": "ollama",
+                "model_override": "llama3.1",
+                "thinking_effort": "low",
+                "memory": {
+                    "recall": True,
+                    "recall_limit": 5,
+                    "write_learnings": True,
+                    "use_workflow_memory": True,
+                },
+            },
+        )
+
+        assert saved.status_code == 200
+        body = saved.json()
+        assert body["role"] == "You analyse carefully."
+        assert body["model_provider"] == "ollama"
+        assert body["memory"]["recall_limit"] == 5
+
+    def test_the_version_moves_so_a_report_can_say_which_one_ran(self, client, auth):
+        created = client.post(
+            "/api/agents", headers=auth, json={"name": "Writer", "role": "You write."}
+        ).json()
+
+        updated = client.put(
+            f"/api/agents/{created['id']}",
+            headers=auth,
+            json={"name": "Writer", "role": "You write briefly."},
+        ).json()
+
+        assert updated["version"] > created["version"]

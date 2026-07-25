@@ -72,7 +72,13 @@ def update(tenant_id: str, agent_id: str, **changes) -> AgentDefinition:
         if changes.get("skill_ids") is not None:
             row.skill_ids = list(changes["skill_ids"])
         if changes.get("memory") is not None:
-            row.memory_config = changes["memory"].model_dump(mode="json")
+            # Either the model or the dict it deserialises from: the API hands
+            # over `request.model_dump()`, which has already flattened the nested
+            # config, and a caller inside the platform passes the model itself.
+            memory = changes["memory"]
+            row.memory_config = (
+                memory if isinstance(memory, dict) else memory.model_dump(mode="json")
+            )
 
         # Bumped on every edit, so a run report can say which version of an
         # agent produced a result.

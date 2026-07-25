@@ -476,3 +476,33 @@ export interface RuntimeInfo {
   effort_levels: string[];
   available_providers: AvailableProvider[];
 }
+
+/** One thing in the workspace map: an agent, a skill, a workflow, a server. */
+export interface WorkspaceNode {
+  id: string;
+  kind: 'agent' | 'skill' | 'workflow' | 'server' | 'provider' | string;
+  label: string;
+  detail: string;
+  /** How much this has been used — drawn as size. */
+  size: number;
+  /** How much it has learned — drawn as glow. */
+  memories: number;
+}
+
+export interface WorkspaceLink {
+  source: string;
+  target: string;
+  kind: string;
+}
+
+export interface WorkspaceMap {
+  nodes: WorkspaceNode[];
+  links: WorkspaceLink[];
+  counts: {
+    agents: number;
+    skills: number;
+    servers: number;
+    workflows: number;
+    memories: number;
+  };
+}

@@ -18,6 +18,7 @@ from api_gateway.routers import (
     skills,
     templates,
     workflows,
+    workspace,
 )
 
 ALL_ROUTERS = (
@@ -34,6 +35,7 @@ ALL_ROUTERS = (
     runtime.router,
     templates.router,
     admin.router,
+    workspace.router,
 )
 
 __all__ = [
@@ -51,4 +53,5 @@ __all__ = [
     "skills",
     "templates",
     "workflows",
+    "workspace",
 ]

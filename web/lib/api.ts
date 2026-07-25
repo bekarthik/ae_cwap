@@ -30,6 +30,7 @@ import type {
   Session,
   SkillDefinition,
   WorkflowGraph,
+  WorkspaceMap,
   WorkflowSummary,
 } from './types';
 
@@ -257,6 +258,9 @@ export const api = {
   /** Create this workspace's own copy of a template. */
   useTemplate: (key: string) =>
     request<InstantiatedTemplate>(`/api/templates/${key}`, { method: 'POST' }),
+
+  /** The whole workspace as one graph: what is here, and what is wired to what. */
+  workspaceMap: () => request<WorkspaceMap>('/api/workspace/map'),
 
   listAgents: () => request<AgentDefinition[]>('/api/agents'),
 

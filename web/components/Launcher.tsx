@@ -3,7 +3,10 @@
 import { useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/api';
-import type { TemplateSummary } from '@/lib/types';
+import { SAMPLE_MAP } from '@/lib/sample-map';
+import type { TemplateSummary, WorkspaceMap } from '@/lib/types';
+
+import { Brain } from './Brain';
 
 interface Props {
   onDescribeGoal: () => void;
@@ -40,6 +43,17 @@ export function Launcher({
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [map, setMap] = useState<WorkspaceMap | null>(null);
+
+  useEffect(() => {
+    // The hero shows *your* workspace once you have one, and an example until
+    // then — labelled as an example, because a demo presented as your own data
+    // is a lie told on the first screen.
+    void api
+      .workspaceMap()
+      .then((loaded) => setMap(loaded.nodes.length ? loaded : SAMPLE_MAP))
+      .catch(() => setMap(SAMPLE_MAP));
+  }, []);
 
   useEffect(() => {
     api
@@ -75,6 +89,18 @@ export function Launcher({
         <p className="lede">
           Multi-step AI work, done by agents that improve each time they run.
         </p>
+
+        {map ? (
+          <div className="launcher__hero">
+            <Brain map={map} height={220} interactive={false} />
+            <div className="launcher__hero-note muted small">
+              {map === SAMPLE_MAP
+                ? 'An example workspace — yours draws itself here as you build.'
+                : 'Your workspace.'}{' '}
+              <a href="/brain">Open it full screen</a>
+            </div>
+          </div>
+        ) : null}
 
         {error ? <div className="notice notice--error">{error}</div> : null}
 

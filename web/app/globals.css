@@ -990,3 +990,98 @@ button.status-pill {
     grid-template-columns: 1fr;
   }
 }
+
+/* ---- the brain ------------------------------------------------------- */
+
+/* The workspace as a living map. Positioned so the overlays — legend, the
+   detail of whatever you clicked — sit on the render rather than beside it,
+   which keeps the shape as large as the space allows. */
+.brain {
+  position: relative;
+  width: 100%;
+  min-height: 240px;
+  overflow: hidden;
+}
+
+.brain__canvas {
+  position: absolute;
+  inset: 0;
+}
+
+.brain__canvas canvas {
+  display: block;
+  cursor: grab;
+}
+
+.brain__canvas canvas:active {
+  cursor: grabbing;
+}
+
+.brain__legend {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.brain__key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.brain__key i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.brain__detail {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  max-width: 260px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.brain__empty,
+.brain__fallback {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 2;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* The map as a hero on the way in: small, non-interactive, and captioned so an
+   example is never mistaken for your own workspace. */
+.launcher__hero {
+  position: relative;
+  margin: 4px 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.launcher__hero-note {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  z-index: 2;
+}
