@@ -319,9 +319,18 @@ export interface ProviderSupport {
   thinking: boolean;
 }
 
+/**
+ * Where the tool-calling answer came from.
+ *
+ * "assumed" means nobody has checked yet — the UI must not state a limitation on
+ * that basis, since the first real request settles it either way.
+ */
+export type ToolSupportSource = 'observed' | 'catalogue' | 'configured' | 'assumed';
+
 export interface LlmInfo {
   configured: boolean;
   provider: string;
+  tool_support?: ToolSupportSource;
   label?: string;
   model?: string;
   base_url?: string;

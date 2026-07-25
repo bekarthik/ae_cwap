@@ -29,7 +29,7 @@ from typing import Any, Protocol
 
 from cwap_common.settings import get_settings
 
-from llm_proxy.catalogue import capabilities_for
+from llm_proxy.catalogue import capabilities_for, is_catalogued
 from llm_proxy.presets import NATIVE_PROVIDERS, Preset, resolve
 
 #: Effort levels the Anthropic API accepts, cheapest first.
@@ -97,6 +97,12 @@ class ProviderCapabilities:
     #: Native tool/function calling. When false the agent loop falls back to a
     #: prompted JSON protocol, which is what makes small open models usable.
     supports_tools: bool = True
+    #: Where `supports_tools` came from, so the canvas can tell a fact from a
+    #: guess. "observed" means this server actually rejected a tools request;
+    #: "catalogue" means the model is listed and its entry says so; "assumed"
+    #: means nobody knows yet and we are about to find out. Only the first two
+    #: justify telling a user their model cannot call tools.
+    tool_support: str = "assumed"
     #: Image input. Set from the model catalogue, since it is a property of the
     #: model rather than of the endpoint.
     supports_vision: bool = False
@@ -124,6 +130,7 @@ class ProviderCapabilities:
                 "vision": self.supports_vision,
                 "thinking": self.supports_thinking,
             },
+            "tool_support": self.tool_support,
         }
 
 
@@ -241,6 +248,7 @@ class StubProvider:
             # on its first iteration. Declaring otherwise would make the canvas
             # promise agentic behaviour the default backend cannot deliver.
             supports_tools=False,
+            tool_support="catalogue",
             deterministic=True,
             notes="No network, no credentials. Output is a stable function of the prompt.",
         )
@@ -321,6 +329,7 @@ class AnthropicProvider:
         )
         resolved = model or self.DEFAULT_MODEL
         tools, vision, thinking = capabilities_for("anthropic", resolved)
+        source = "catalogue" if is_catalogued("anthropic", resolved) else "assumed"
         self.capabilities = ProviderCapabilities(
             provider="anthropic",
             label="Anthropic Claude",
@@ -331,6 +340,7 @@ class AnthropicProvider:
             supports_stop_sequences=True,
             supports_system_prompt=True,
             supports_tools=tools,
+            tool_support=source,
             supports_vision=vision,
             supports_thinking=thinking,
             notes="Current Claude models reject sampling parameters; use effort instead.",
@@ -526,6 +536,9 @@ class OpenAICompatibleProvider:
         # rejection; an operator can force either mode.
         self._tool_mode = get_settings().llm_tool_mode
         tools, vision, thinking = capabilities_for(provider, model)
+        source = "catalogue" if is_catalogued(provider, model) else "assumed"
+        if self._tool_mode == "prompted":
+            source = "configured"
         self.capabilities = ProviderCapabilities(
             provider=provider,
             label=label or provider,
@@ -538,6 +551,7 @@ class OpenAICompatibleProvider:
             # A hint from the catalogue, not a promise: `_post` still downgrades
             # permanently if the server rejects a tools request at runtime.
             supports_tools=tools and self._tool_mode != "prompted",
+            tool_support=source,
             supports_vision=vision,
             supports_thinking=thinking,
             base_url=self._base_url,
@@ -647,8 +661,13 @@ class OpenAICompatibleProvider:
         try:
             return self._converse_native(messages, system, tools, options)
         except _ToolsUnsupported:
+            # The server has now told us for certain, which outranks anything the
+            # catalogue guessed. Recorded as "observed" so the canvas can say so
+            # rather than implying the platform knew in advance.
             self._tool_mode = "prompted"
-            self.capabilities = replace(self.capabilities, supports_tools=False)
+            self.capabilities = replace(
+                self.capabilities, supports_tools=False, tool_support="observed"
+            )
             return self._converse_prompted(messages, system, tools or [], options)
 
     def _converse_native(

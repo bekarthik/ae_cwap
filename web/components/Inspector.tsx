@@ -385,6 +385,11 @@ function AgentControls({
   const params = node.data.params ?? {};
   const assigned = agents.find((agent) => agent.id === node.data.agentId) ?? null;
   const toolsNative = runtime?.llm.supports?.tools ?? true;
+  // Where that answer came from. The platform must not tell someone their model
+  // cannot call tools on the strength of a guess — only when the server said so
+  // ("observed"), the model is one we have curated ("catalogue"), or an operator
+  // forced the prompted protocol ("configured").
+  const toolSource = runtime?.llm.tool_support ?? 'assumed';
 
   return (
     <>
@@ -454,11 +459,15 @@ function AgentControls({
             </div>
           </div>
 
-          {!toolsNative ? (
+          {!toolsNative && toolSource !== 'assumed' ? (
             <div className="notice notice--info">
-              {runtime?.llm.label ?? 'This model'} has no native tool calling, so skills
-              are offered through a prompted protocol instead. It works, but a model
-              with native tools follows a multi-step plan more reliably.
+              {toolSource === 'observed'
+                ? `${runtime?.llm.model ?? 'This model'} rejected a tool-calling request, so skills are being offered through a prompted protocol instead.`
+                : toolSource === 'configured'
+                  ? 'This deployment is set to offer skills through the prompted protocol rather than native tool calling.'
+                  : `${runtime?.llm.model ?? 'This model'} does not support native tool calling, so skills are offered through a prompted protocol instead.`}{' '}
+              It works; a model with native tools follows a multi-step plan more
+              reliably.
             </div>
           ) : null}
 

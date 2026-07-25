@@ -96,22 +96,27 @@ CATALOGUE: dict[str, tuple[ModelCard, ...]] = {
         ),
         ModelCard(
             "llama3.2-vision", "Llama 3.2 Vision 11B",
-            tools=False, vision=True, context=128_000, open_weights=True,
-            notes="Reads images. No native tool calling — the prompted protocol is used.",
+            vision=True, context=128_000, open_weights=True,
+            notes="Reads images.",
         ),
         ModelCard(
             "deepseek-r1", "DeepSeek-R1 (distill)",
-            tools=False, thinking=True, context=128_000, open_weights=True,
-            notes="Reasons before answering; no native tool calling.",
+            thinking=True, context=128_000, open_weights=True,
+            notes="Reasons before answering.",
         ),
         ModelCard(
             "mistral", "Mistral 7B",
-            tools=True, context=32_000, open_weights=True,
+            context=32_000, open_weights=True,
         ),
         ModelCard(
             "gemma3", "Gemma 3",
-            tools=False, vision=True, context=128_000, open_weights=True,
-            notes="Vision-capable; driven through the prompted tool protocol.",
+            vision=True, context=128_000, open_weights=True,
+            notes="Vision-capable.",
+        ),
+        ModelCard(
+            "qwen3", "Qwen 3",
+            thinking=True, context=128_000, open_weights=True,
+            notes="Strong tool calling, with a thinking mode.",
         ),
     ),
     "together": (
@@ -125,11 +130,11 @@ CATALOGUE: dict[str, tuple[ModelCard, ...]] = {
         ),
         ModelCard(
             "deepseek-ai/DeepSeek-R1", "DeepSeek-R1",
-            tools=False, thinking=True, context=128_000, open_weights=True,
+            thinking=True, context=128_000, open_weights=True,
         ),
         ModelCard(
             "meta-llama/Llama-Vision-Free", "Llama 3.2 11B Vision",
-            tools=False, vision=True, context=128_000, open_weights=True,
+            vision=True, context=128_000, open_weights=True,
         ),
     ),
     "groq": (
@@ -163,15 +168,19 @@ CATALOGUE: dict[str, tuple[ModelCard, ...]] = {
         ),
         ModelCard(
             "accounts/fireworks/models/deepseek-r1", "DeepSeek-R1",
-            tools=False, thinking=True, context=128_000, open_weights=True,
+            thinking=True, context=128_000, open_weights=True,
         ),
     ),
     "deepseek": (
         ModelCard("deepseek-chat", "DeepSeek Chat", tools=True, context=64_000),
+        # The one remaining `tools=False`. DeepSeek documents that the reasoner
+        # does not accept function calling, so this is a fact about the API
+        # rather than a guess about the weights — which is the bar an entry has
+        # to clear before it may assert the negative.
         ModelCard(
             "deepseek-reasoner", "DeepSeek Reasoner",
             tools=False, thinking=True, context=64_000,
-            notes="Reasoning mode; tool calling is not supported.",
+            notes="DeepSeek's API does not accept tool calls on this model.",
         ),
     ),
     "mistral": (
@@ -182,6 +191,9 @@ CATALOGUE: dict[str, tuple[ModelCard, ...]] = {
         ),
     ),
     "vllm": (),
+    # LM Studio serves whatever the user has loaded, so a curated list would be
+    # guesswork. Detection against the running server is the answer, and current
+    # LM Studio builds support native tool calling for models that have it.
     "lmstudio": (),
     "llamacpp": (),
     "tgi": (),
@@ -197,26 +209,33 @@ CATALOGUE: dict[str, tuple[ModelCard, ...]] = {
 }
 
 
-#: Substring → (tools, vision, thinking), for models the catalogue has not heard
-#: of. Order matters: the first match wins, so put the specific before the broad.
-_HINTS: tuple[tuple[str, tuple[bool, bool, bool]], ...] = (
-    ("vision", (False, True, False)),
-    ("-vl", (True, True, False)),
-    ("pixtral", (True, True, False)),
-    ("llava", (False, True, False)),
-    ("gemma", (False, True, False)),
-    ("r1", (False, False, True)),
-    ("reasoner", (False, False, True)),
-    ("qwq", (False, False, True)),
-    ("thinking", (True, False, True)),
-    ("claude", (True, True, True)),
-    ("gpt-4", (True, True, False)),
-    ("gpt-5", (True, True, True)),
-    ("qwen", (True, False, False)),
-    ("llama", (True, False, False)),
-    ("mistral", (True, False, False)),
-    ("mixtral", (True, False, False)),
-    ("phi", (False, False, False)),
+#: Substring → (vision, thinking), for models the catalogue has not heard of.
+#:
+#: Note what is *not* here: tool calling. A name is not evidence a model cannot
+#: call tools, and guessing that it cannot is the expensive mistake — it silently
+#: routes a capable model onto the slower prompted protocol and makes the canvas
+#: state something untrue. The opposite guess costs one rejected request, which
+#: the provider already recovers from by downgrading permanently and retrying.
+#: So tool support is only ever asserted from an explicit catalogue entry or from
+#: what the server actually did. See `capabilities_for`.
+#:
+#: Vision and thinking are safe to guess: being wrong changes which controls the
+#: canvas offers, not how a request is made.
+#:
+#: Order matters — the first match wins, so put the specific before the broad.
+_HINTS: tuple[tuple[str, tuple[bool, bool]], ...] = (
+    ("-vl", (True, False)),
+    ("vision", (True, False)),
+    ("pixtral", (True, False)),
+    ("llava", (True, False)),
+    ("gemma", (True, False)),
+    ("reasoner", (False, True)),
+    ("qwq", (False, True)),
+    ("thinking", (False, True)),
+    ("deepseek-r1", (False, True)),
+    ("claude", (True, True)),
+    ("gpt-4", (True, False)),
+    ("gpt-5", (True, True)),
 )
 
 
@@ -239,21 +258,40 @@ def find(provider: str, model: str) -> ModelCard | None:
 def capabilities_for(provider: str, model: str) -> tuple[bool, bool, bool]:
     """`(tools, vision, thinking)` for a model, catalogued or not.
 
-    An unknown model gets an optimistic guess from its name and, failing that,
-    `(True, False, False)` — assume tools, since most instruction-tuned models
-    released since 2024 have them, and the runtime downgrades cleanly when the
-    server says otherwise. Guessing "no tools" would silently put every unlisted
-    model on the slower prompted path.
+    Tool support is **never** inferred from a name. A catalogued model reports
+    what the catalogue says; anything else is assumed capable, and the provider
+    finds out for certain the first time it sends a tools request — a server that
+    rejects it downgrades that provider permanently and retries within the same
+    call, which is the only trustworthy answer available.
+
+    That asymmetry is deliberate. Assuming tools and being wrong costs one
+    rejected request. Assuming no tools and being wrong routes a perfectly
+    capable model onto the slower prompted protocol *forever*, and there is no
+    later signal that would ever correct it.
     """
     card = find(provider, model)
     if card is not None:
         return card.tools, card.vision, card.thinking
 
+    vision, thinking = _infer(model)
+    return True, vision, thinking
+
+
+def _infer(model: str) -> tuple[bool, bool]:
+    """`(vision, thinking)` guessed from a model's name."""
     lowered = model.lower()
     for needle, flags in _HINTS:
         if needle in lowered:
             return flags
-    return True, False, False
+    return False, False
+
+
+def is_catalogued(provider: str, model: str) -> bool:
+    """Whether the tool-support answer is curated rather than assumed.
+
+    The UI needs this to decide whether it may state a capability as fact.
+    """
+    return find(provider, model) is not None
 
 
 def cards_for(provider: str) -> tuple[ModelCard, ...]:

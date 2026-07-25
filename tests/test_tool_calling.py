@@ -462,7 +462,12 @@ class TestMessageTranslation:
 
 class TestModelCatalogue:
     def test_a_catalogued_model_reports_its_real_capabilities(self):
-        assert capabilities_for("ollama", "llama3.2-vision") == (False, True, False)
+        """Vision is curated here. Tool calling is not asserted away: this entry
+        used to claim `tools=False`, which was true of the runtime in 2024 and
+        stopped being true, and nothing would ever have corrected it."""
+        tools, vision, thinking = capabilities_for("ollama", "llama3.2-vision")
+        assert (vision, thinking) == (True, False)
+        assert tools is True
 
     def test_a_reasoning_model_is_marked_as_thinking(self):
         _tools, _vision, thinking = capabilities_for("deepseek", "deepseek-reasoner")
@@ -500,10 +505,114 @@ class TestModelCatalogue:
             provider="ollama", base_url="http://localhost:11434/v1", model="llama3.2-vision"
         )
         assert client.capabilities.supports_vision is True
-        assert client.capabilities.supports_tools is False
+        assert client.capabilities.tool_support == "catalogue"
 
     def test_the_stub_does_not_claim_tool_support(self):
         """It never asks for a tool, so an agent loop against it always ends on
         the first iteration. Claiming otherwise would promise agentic behaviour
         the default backend cannot deliver."""
         assert StubProvider().capabilities.supports_tools is False
+
+
+class TestToolSupportIsNeverGuessedAway:
+    """Reported from a real deployment: the canvas told a user their LM Studio
+    model had no native tool calling, on the strength of a substring in its name.
+
+    The asymmetry is the whole point. Assuming a model *has* tools and being
+    wrong costs one rejected request, which the provider recovers from by
+    downgrading permanently and retrying inside the same call. Assuming it does
+    *not* routes a perfectly capable model onto the slower prompted protocol
+    forever, and no later signal would ever correct it.
+    """
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "gemma-3-12b-it",
+            "phi-4",
+            "llava-v1.6-mistral-7b",
+            "qwen3-8b",
+            "some-model-r1-variant",
+            "internal-finetune-v3",
+            "granite-3.3-8b-instruct",
+        ],
+    )
+    def test_an_unlisted_model_is_assumed_capable(self, model):
+        """Every one of these used to be guessed out of tool calling by a
+        substring match."""
+        tools, _vision, _thinking = capabilities_for("lmstudio", model)
+        assert tools is True
+
+    def test_the_guess_is_reported_as_a_guess(self):
+        client = OpenAICompatibleProvider(
+            provider="lmstudio", base_url="http://localhost:1234/v1", model="gemma-3-12b-it"
+        )
+        assert client.capabilities.supports_tools is True
+        assert client.capabilities.tool_support == "assumed"
+
+    def test_a_catalogued_model_is_reported_as_curated(self):
+        client = OpenAICompatibleProvider(
+            provider="ollama", base_url="http://localhost:11434/v1", model="llama3.1"
+        )
+        assert client.capabilities.tool_support == "catalogue"
+
+    def test_vision_and_thinking_may_still_be_guessed(self):
+        """Being wrong there changes which controls the canvas offers, not how a
+        request is made — so the same caution does not apply."""
+        _tools, vision, _thinking = capabilities_for("lmstudio", "some-vision-model")
+        assert vision is True
+        _tools, _vision, thinking = capabilities_for("lmstudio", "qwen3-8b-thinking")
+        assert thinking is True
+
+    def test_only_a_documented_limitation_may_assert_the_negative(self):
+        """The bar an entry has to clear before the catalogue says "no tools":
+        the provider documents it, not that the weights are rumoured to lack it."""
+        from llm_proxy.catalogue import CATALOGUE
+
+        asserted = [
+            (provider, card.id)
+            for provider, cards in CATALOGUE.items()
+            for card in cards
+            if not card.tools
+        ]
+        assert asserted == [("deepseek", "deepseek-reasoner"), ("stub", "stub-model")], (
+            "a new tools=False entry needs a documented provider limitation "
+            f"behind it, not a guess: {asserted}"
+        )
+
+    def test_a_real_rejection_outranks_the_assumption(self, patched_httpx):
+        """And is recorded as observed, so the canvas can say the server told us
+        rather than implying the platform knew in advance."""
+
+        def handler(request):
+            if "tools" in json.loads(request.content):
+                return httpx.Response(
+                    400, json={"error": {"message": "this model does not support tools"}}
+                )
+            return text_response("fine")
+
+        patched_httpx(handler)
+        client = provider("gemma-3-12b-it")
+        assert client.capabilities.tool_support == "assumed"
+
+        client.converse([ChatMessage(role="user", content="x")], tools=[SUMMARISE_TOOL])
+
+        assert client.capabilities.supports_tools is False
+        assert client.capabilities.tool_support == "observed"
+
+    def test_forcing_the_prompted_protocol_is_reported_as_configured(self, monkeypatch):
+        """An operator's decision is not the model's limitation, and the message
+        a user reads should not confuse the two."""
+        from cwap_common.settings import reset_settings_cache
+
+        monkeypatch.setenv("CWAP_LLM_TOOL_MODE", "prompted")
+        reset_settings_cache()
+
+        client = provider("llama3.1")
+        assert client.capabilities.supports_tools is False
+        assert client.capabilities.tool_support == "configured"
+
+    def test_the_runtime_endpoint_reports_the_provenance(self, client, auth):
+        """The canvas needs it to decide whether it may state a limitation."""
+        body = client.get("/api/runtime", headers=auth).json()
+        assert "tool_support" in body["llm"]

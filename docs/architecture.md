@@ -276,6 +276,23 @@ Environment configuration remains the deployment default and the fallback, and
 the store is failure-tolerant — a model call must still work before the schema
 exists and in a process with no database.
 
+### A token is a claim; the database is the truth
+
+`current_principal` confirms the identity a token names still exists in the
+tenant it claims. They can disagree without anything being wrong — a container's
+database is recreated while `CWAP_JWT_SECRET` stays put, an account is deleted, a
+user moves tenant — and in every case the token still verifies.
+
+Checking at the *authentication* boundary rather than only at the authorisation
+one is what stops a phantom identity from creating agents, skills and workflows
+it owns, then being refused the moment someone presses Run. And the status is
+401, not 403: 403 means "we know you and you may not", while the remedy here is
+to sign in again, which a browser can act on by dropping the stored session.
+
+A job whose user is revoked *while it sits in the queue* is a different case and
+stays a 403 into the dead letter queue — the job is already in flight and there
+is nobody to re-authenticate. Mandate §2's consumer re-check is unchanged.
+
 ### Egress is default-deny
 
 An HTTP node is user-authored content executed server-side. Without an allow-list

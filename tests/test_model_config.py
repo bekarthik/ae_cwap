@@ -197,11 +197,13 @@ class TestDetectingModels:
         assert {model.id for model in found} == {"llama3.1", "qwen2.5", "nomic-embed-text"}
 
     def test_a_detected_model_carries_its_real_capabilities(self, patched_httpx):
+        """Curated where the catalogue knows, and never guessed out of tool
+        calling — see `TestToolSupportIsNeverGuessedAway` in test_tool_calling."""
         patched_httpx(lambda request: models_response("llama3.2-vision"))
         [found] = service.available_models("ollama")
 
         assert found.known is True
-        assert (found.vision, found.tools) == (True, False)
+        assert (found.vision, found.tools) == (True, True)
 
     def test_a_model_the_catalogue_has_never_seen_still_appears(self, patched_httpx):
         """Hiding it would make a private fine-tune unusable from the picker."""

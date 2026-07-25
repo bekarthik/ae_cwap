@@ -71,6 +71,23 @@ export function clearSession(): void {
   window.localStorage.removeItem(TOKEN_KEY);
 }
 
+/**
+ * Called when a stored session turns out to be unusable.
+ *
+ * A callback rather than a redirect: the app decides what to show, and the API
+ * module stays the one thing that only knows how to talk to the gateway.
+ */
+type SessionExpiredHandler = () => void;
+let onSessionExpired: SessionExpiredHandler | null = null;
+
+export function setSessionExpiredHandler(handler: SessionExpiredHandler | null): void {
+  onSessionExpired = handler;
+}
+
+function notifySessionExpired(): void {
+  onSessionExpired?.();
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const session = loadSession();
   const headers = new Headers(init.headers);
@@ -85,6 +102,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const text = await response.text();
   const body = text ? safeParse(text) : null;
+
+  // A 401 on a request we sent a token with means the stored session is no
+  // longer usable — expired, or belonging to an account this deployment no
+  // longer has (a recreated database with the same JWT secret does exactly
+  // that). Holding on to it leaves the user clicking through a UI where every
+  // action fails, so it is dropped and the app falls back to the sign-in form.
+  if (response.status === 401 && session) {
+    clearSession();
+    notifySessionExpired();
+  }
 
   if (!response.ok) {
     throw new ApiError(

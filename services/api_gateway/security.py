@@ -163,6 +163,49 @@ def decode_token(token: str) -> Principal:
     )
 
 
+def assert_principal_is_current(principal: Principal) -> Principal:
+    """Confirm the identity a token claims still exists in the tenant it names.
+
+    A signed token is a *claim*; the database is the truth. They can disagree
+    without anything being wrong: a container's database is recreated while
+    `CWAP_JWT_SECRET` stays put, an account is deleted, a user is moved to
+    another tenant. In every case the token still verifies, and the identity it
+    asserts is gone.
+
+    Checking here rather than only at the authorisation boundary is deliberate.
+    Without it, every route that needs nothing but a decoded principal succeeds —
+    including ones that create agents, skills and workflows *owned by an identity
+    that does not exist* — and the first objection arrives when the user presses
+    Run, phrased as an authorisation failure. That reads like a security incident
+    and is a stale browser session.
+
+    The status matters as much as the timing. 403 means "we know who you are and
+    you may not"; the remedy here is to sign in again, which is 401 — and which a
+    browser can act on by clearing the session and showing the sign-in form.
+
+    Cost is one primary-key read per authenticated request. That is what "the
+    token is a claim, the database is the truth" costs, and it is the same read
+    the authorisation service was already doing later in the request anyway.
+    """
+    with read_only_session() as session:
+        exists = (
+            session.query(User.id)
+            .filter_by(id=principal.user_id, tenant_id=principal.tenant_id)
+            .first()
+        )
+
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "this session belongs to an account that no longer exists — "
+                "please sign in again"
+            ),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
+
+
 def current_principal(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> Principal:
@@ -172,20 +215,21 @@ def current_principal(
             detail="missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return decode_token(credentials.credentials)
+    return assert_principal_is_current(decode_token(credentials.credentials))
 
 
 def principal_from_query_token(token: str | None) -> Principal:
     """WebSocket authentication.
 
     Browsers cannot set headers on a WebSocket handshake, so the token arrives
-    as a query parameter. It is the same signed JWT and is verified identically.
+    as a query parameter. It is the same signed JWT, verified identically, and
+    the identity it names is confirmed the same way.
     """
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="missing token query parameter"
         )
-    return decode_token(token)
+    return assert_principal_is_current(decode_token(token))
 
 
 def bootstrap_demo_user() -> Principal | None:

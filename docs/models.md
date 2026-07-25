@@ -106,9 +106,32 @@ server configuration, and a browser session switching model underneath other
 people's in-flight runs is not something a page should be able to do.
 
 The catalogue in `services/llm_proxy/catalogue.py` is a hint, never a gate. An
-unlisted model still runs — its capabilities are inferred from its name, and
-anything the backend then rejects is handled at run time — so a private
-fine-tune is one keystroke away in the model field.
+unlisted model still runs — so a private fine-tune is one keystroke away in the
+model field.
+
+**Tool support is never inferred from a model's name.** That rule exists because
+the two possible mistakes are not symmetric:
+
+| Guess | If wrong | Cost |
+| --- | --- | --- |
+| "this model has tools" | The server rejects the request | One retried call, then a permanent downgrade |
+| "this model has no tools" | It did have them | The slower prompted protocol **forever**, with no signal that would ever correct it |
+
+So a catalogued model reports what its entry says, anything else is assumed
+capable, and the first real request settles it. An entry may only assert the
+negative when the *provider documents it* — currently just `deepseek-reasoner`.
+Vision and thinking are still guessed from a name, because being wrong there
+changes which controls the canvas offers, not how a request is made.
+
+The canvas reports where its answer came from, and only states a limitation it
+did not guess:
+
+| `tool_support` | Meaning | Shown to the user? |
+| --- | --- | --- |
+| `observed` | This server rejected a tools request | Yes — "the model rejected a tool-calling request" |
+| `catalogue` | The model is listed and its entry says so | Yes — "does not support native tool calling" |
+| `configured` | An operator set `CWAP_LLM_TOOL_MODE=prompted` | Yes — as a deployment setting, not a model limitation |
+| `assumed` | Nobody has checked yet | **No** |
 
 ---
 
