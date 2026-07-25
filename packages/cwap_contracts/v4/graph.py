@@ -203,12 +203,16 @@ class WorkflowGraph(ContractModel):
         if visited != len(node_ids):
             raise ValueError("workflow graph contains a cycle; execution would never terminate")
 
-    #: Whether a plain node may have several outgoing edges. Held as a flag
-    #: rather than simply deleted because a permission the runtime cannot honour
-    #: is worse than a restriction: until the worker dispatches every successor,
-    #: a second edge would be accepted at save time and silently never run.
-    #: `orchestrator` flips this on when it can fan out.
-    ALLOW_FAN_OUT: ClassVar[bool] = False
+    #: Whether a plain node may have several outgoing edges.
+    #:
+    #: Kept as a flag rather than deleted outright because it records *why* the
+    #: restriction existed: a permission the runtime cannot honour is worse than
+    #: a restriction, and until the worker dispatched every successor a second
+    #: edge would have been accepted at save time and silently never run. The
+    #: worker does now — `runner._dispatch` fans out, joins wait for every
+    #: inbound path, and a claim keeps two branches from starting the same join
+    #: twice — so this is on.
+    ALLOW_FAN_OUT: ClassVar[bool] = True
 
     def _validate_branches(self) -> None:
         """A *branch* is exactly two paths; plain fan-out is parallel work.

@@ -415,6 +415,8 @@ function AgentControls({
         ) : null}
       </div>
 
+      <ReviewControls node={node} agents={agents} onPatchNode={onPatchNode} />
+
       <div className="field">
         <label htmlFor="objective">What it should achieve here</label>
         <textarea
@@ -654,6 +656,83 @@ function EdgeInspector({
       <button className="btn btn--danger btn--block" onClick={() => onDelete(edge.id)}>
         Remove connection
       </button>
+    </div>
+  );
+}
+
+/**
+ * A quality loop on one step: another agent reviews the answer, this one
+ * revises, until the reviewer approves or the rounds run out.
+ *
+ * The rounds are bounded and the repetition happens *inside* the step, which is
+ * why the canvas stays acyclic — an edge looping back to an earlier node would
+ * make termination depend on a model's judgement rather than on the structure,
+ * and a workflow whose cost cannot be bounded before it runs is one nobody can
+ * safely press Run on.
+ */
+function ReviewControls({
+  node,
+  agents,
+  onPatchNode,
+}: {
+  node: CanvasNode;
+  agents: AgentDefinition[];
+  onPatchNode: Props['onPatchNode'];
+}) {
+  const review = node.data.review;
+  // An agent reviewing its own draft has already decided it is good — that is
+  // why it stopped — so it is not offered.
+  const candidates = agents.filter((agent) => agent.id !== node.data.agentId);
+
+  return (
+    <div className="field">
+      <label htmlFor="reviewer">Reviewed by</label>
+      <div className="row">
+        <select
+          id="reviewer"
+          value={review?.agent_id ?? ''}
+          onChange={(event) =>
+            onPatchNode(node.id, {
+              review: event.target.value
+                ? {
+                    agent_id: event.target.value,
+                    max_rounds: review?.max_rounds ?? 2,
+                    approval_phrase: review?.approval_phrase ?? 'APPROVED',
+                  }
+                : null,
+            })
+          }
+        >
+          <option value="">— nobody, the answer stands —</option>
+          {candidates.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.name}
+            </option>
+          ))}
+        </select>
+        {review ? (
+          <select
+            aria-label="Rounds"
+            value={String(review.max_rounds)}
+            onChange={(event) =>
+              onPatchNode(node.id, {
+                review: { ...review, max_rounds: Number(event.target.value) },
+              })
+            }
+          >
+            {[1, 2, 3, 4, 5].map((rounds) => (
+              <option key={rounds} value={rounds}>
+                {rounds} round{rounds > 1 ? 's' : ''}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
+      <div className="hint">
+        {review
+          ? 'The reviewer critiques the draft and this agent revises, repeating until the reviewer approves or the rounds run out. The last revision is used either way.'
+          : 'Optional. A second agent checking the work catches what the author cannot — it stopped because it already thought the answer was good.'}
+      </div>
     </div>
   );
 }

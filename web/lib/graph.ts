@@ -10,7 +10,13 @@
 
 import type { Edge, Node } from '@xyflow/react';
 
-import type { NodeType, WorkflowEdge, WorkflowGraph, WorkflowNode } from './types';
+import type {
+  NodeType,
+  ReviewConfig,
+  WorkflowEdge,
+  WorkflowGraph,
+  WorkflowNode,
+} from './types';
 
 export interface NodeData extends Record<string, unknown> {
   label: string;
@@ -18,6 +24,8 @@ export interface NodeData extends Record<string, unknown> {
   params: Record<string, unknown>;
   knowledgeHandle: string | null;
   agentId: string | null;
+  /** Another agent that must approve this step's answer, if one was nominated. */
+  review: ReviewConfig | null;
 }
 
 export type CanvasNode = Node<NodeData>;
@@ -139,6 +147,7 @@ export function emptyGraph(): WorkflowGraph {
         position: { x: 40, y: 160 },
         knowledge_handle: null,
         agent_id: null,
+        review: null,
       },
       {
         id: outputId,
@@ -148,6 +157,7 @@ export function emptyGraph(): WorkflowGraph {
         position: { x: 460, y: 160 },
         knowledge_handle: null,
         agent_id: null,
+        review: null,
       },
     ],
     edges: [
@@ -177,6 +187,7 @@ export function toCanvas(graph: WorkflowGraph): {
         params: node.params ?? {},
         knowledgeHandle: node.knowledge_handle,
         agentId: node.agent_id,
+        review: node.review ?? null,
       },
     })),
     edges: graph.edges.map((edge) => ({
@@ -208,6 +219,7 @@ export function toGraph(
       position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
       knowledge_handle: node.data.knowledgeHandle ?? null,
       agent_id: node.data.agentId ?? null,
+      review: node.data.review ?? null,
     })),
     edges: edges.map((edge) => {
       const data = (edge.data ?? {}) as {

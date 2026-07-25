@@ -21,7 +21,7 @@ from typing import Any
 
 from cwap_common.contract_gateway import ConsumerWrapper, ProducerWrapper
 from cwap_common.db import read_only_session, unit_of_work
-from cwap_common.idempotency import commit_step_output
+from cwap_common.idempotency import claim_dispatch, commit_step_output
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, WorkflowExecutionState
 from cwap_common.settings import get_settings
@@ -345,25 +345,147 @@ class Worker:
                 for branch_output in planned.branch_outputs:
                     commit_step_output(session, branch_output)
 
-        if planned.next_step.terminal:
+        dispatched = 0
+        for step in planned.next_steps:
+            if step.terminal:
+                continue
+            if self._dispatch(graph, payload, context, step, node_type=node_type):
+                dispatched += 1
+
+        # Nothing left to start *from here*. That is not the same as the run
+        # being over: a sibling branch may still be working, and a join this
+        # step could not open will be opened by whoever finishes last.
+        if dispatched == 0 and not self._work_remains(graph, payload.run_id):
             self._succeed(payload, context, node_type=node_type)
-            return
+
+    def _dispatch(
+        self,
+        graph: WorkflowGraph,
+        payload: WorkflowJobPayload,
+        context: RunContext,
+        step,
+        *,
+        node_type: NodeType,
+    ) -> bool:
+        """Enqueue one successor, if it is this worker's to enqueue.
+
+        Two gates, both of which only matter once a workflow can fan out. A node
+        with several inbound edges is a join and must not start until every one
+        of them has arrived — otherwise it runs on half its inputs. And two
+        branches finishing at the same moment both see a join ready, so exactly
+        one of them wins the right to enqueue it; without that claim the join
+        would run twice, under two step ids that the state row's own uniqueness
+        cannot collapse.
+        """
+        target_id = step.target_node_id
+        joining = bool(target_id) and len(graph.incoming(target_id)) > 1
+        if joining and not self._join_ready(graph, payload.run_id, target_id):
+            return False
+
+        if joining:
+            # A join is fed by every path into it, not just the one this worker
+            # happens to be finishing. Its bindings are the union of all of them,
+            # resolved against freshly committed state — the sibling's output may
+            # have landed after this worker started, and the whole point of the
+            # step is that it sees both.
+            step = step.model_copy(
+                update={"input_bindings": _joined_bindings(graph, target_id)}
+            )
+            context = self._rebuild_context(payload.run_id, self._inputs_for(payload.run_id))
 
         try:
-            inputs = resolve_bindings(planned.next_step.input_bindings, context)
+            inputs = resolve_bindings(step.input_bindings, context)
         except BindingError as exc:
             self._fail(payload, str(exc))
-            return
+            return False
+
+        if joining:
+            with unit_of_work() as session:
+                if not claim_dispatch(session, payload.run_id, target_id):
+                    return False
 
         next_payload = build_payload(
             graph=graph,
             run_id=payload.run_id,
             job_context=payload.job_context,
             current_state=result_state_for(node_type),
-            next_step=planned.next_step,
+            next_step=step,
             inputs=inputs,
         )
         self.producer.publish(next_payload)
+        return True
+
+    @staticmethod
+    def _inputs_for(run_id: str) -> dict[str, Any]:
+        with read_only_session() as session:
+            run = session.get(Run, run_id)
+            return dict(run.inputs or {}) if run is not None else {}
+
+    def _join_ready(self, graph: WorkflowGraph, run_id: str, node_id: str) -> bool:
+        """Whether every path into this node has arrived.
+
+        A branch's untaken side never arrives, so an edge whose source resolved
+        the other way is treated as closed rather than pending — waiting for it
+        would hang the run on a path the workflow deliberately did not take.
+        """
+        incoming = graph.incoming(node_id)
+        if len(incoming) <= 1:
+            return True
+
+        completed, decisions = self._run_state(run_id)
+        for edge in incoming:
+            if edge.source in completed:
+                continue
+            if _is_closed(graph, edge.source, completed, decisions):
+                continue
+            return False
+        return True
+
+    def _work_remains(self, graph: WorkflowGraph, run_id: str) -> bool:
+        """Whether any step of this run is still going or still to come.
+
+        Asked when a path ends, to tell "this branch is done" from "the run is
+        done". Read from committed state rather than from a counter, for the
+        same reason run context is: a worker that restarts mid-run must reach
+        the same answer as one that did not.
+        """
+        completed, decisions = self._run_state(run_id)
+        for node in graph.nodes:
+            if node.id in completed or node.type is NodeType.BRANCH:
+                continue
+            if _is_closed(graph, node.id, completed, decisions):
+                continue
+            # Every path into it has arrived and it has not run: it is either in
+            # flight or about to be.
+            if all(
+                edge.source in completed or _is_closed(graph, edge.source, completed, decisions)
+                for edge in graph.incoming(node.id)
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _run_state(run_id: str) -> tuple[set[str], dict[str, bool]]:
+        """Which nodes have finished, and which way each decision went.
+
+        Both read from committed state rather than held in memory, for the same
+        reason run context is: a worker that picks up a run someone else started
+        has to reach the same answer as the one that started it.
+        """
+        completed: set[str] = set()
+        decisions: dict[str, bool] = {}
+        with read_only_session() as session:
+            rows = (
+                session.query(WorkflowExecutionState)
+                .filter(WorkflowExecutionState.run_id == run_id)
+                .all()
+            )
+            for row in rows:
+                completed.add(row.node_id)
+                verdict = (row.output or {}).get("decision")
+                if isinstance(verdict, bool):
+                    decisions[row.node_id] = verdict
+        return completed, decisions
 
     def _succeed(
         self, payload: WorkflowJobPayload, context: RunContext, *, node_type: NodeType
@@ -534,6 +656,49 @@ __all__ = [
     "run_to_completion",
     "start_run",
 ]
+
+
+def _joined_bindings(graph: WorkflowGraph, node_id: str) -> dict[str, str]:
+    """Every value a join is fed, from every path into it.
+
+    Later edges win a name collision, which is arbitrary and also unambiguous —
+    two paths binding the same name to different values is a workflow that has
+    not decided what it means, and the canvas shows both edges plainly.
+    """
+    bindings: dict[str, str] = {}
+    for edge in graph.incoming(node_id):
+        bindings.update(edge.bindings)
+    return bindings
+
+
+def _is_closed(
+    graph: WorkflowGraph,
+    node_id: str,
+    completed: set[str],
+    decisions: dict[str, bool],
+) -> bool:
+    """Whether this node can never run, because the path to it was not taken.
+
+    Only a decision closes a path: its untaken side leads to nodes that will
+    never arrive, and a join that waited for one of them would hang the run on a
+    branch the workflow deliberately did not choose. Everything else has either
+    run, is running, or is waiting on something that will come.
+    """
+    incoming = graph.incoming(node_id)
+    if not incoming:
+        return False
+
+    for edge in incoming:
+        source = graph.node(edge.source)
+        if source.type is NodeType.BRANCH and edge.condition is not None:
+            taken = decisions.get(source.id)
+            if taken is not None and taken is not edge.condition:
+                continue  # this path was closed by the decision
+        if edge.source in completed:
+            return False
+        if not _is_closed(graph, edge.source, completed, decisions):
+            return False
+    return True
 
 
 def _condense_result(result: Any) -> str:

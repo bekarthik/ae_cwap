@@ -90,6 +90,36 @@ def commit_step_output(session: Session, output: StepOutputContext) -> bool:
     return _inserted(session, stmt)
 
 
+def claim_dispatch(session: Session, run_id: str, node_id: str) -> bool:
+    """Claim the right to enqueue one node of one run. True means "you won".
+
+    Needed the moment a workflow can fan out. Two branches finishing at the same
+    moment both look at a join, both see every predecessor complete, and both
+    enqueue it — the step then runs twice, with two step ids, so the state row's
+    own uniqueness does not catch it. A claim keyed on the node makes exactly one
+    of them the dispatcher.
+
+    Uses the same ledger and the same first-write-wins insert as an external side
+    effect, because that is precisely what this is: an operation that must happen
+    once per run however many workers ask.
+    """
+    insert = _insert_for(session)
+    stmt = (
+        insert(IdempotencyLedger)
+        .values(
+            run_id=run_id,
+            step_execution_id="dispatch",
+            operation=f"dispatch:{node_id}",
+            status="SUCCEEDED",
+        )
+        .on_conflict_do_nothing(
+            index_elements=["run_id", "step_execution_id", "operation"]
+        )
+        .returning(IdempotencyLedger.id)
+    )
+    return _inserted(session, stmt)
+
+
 def append_log(session: Session, event: LogEvent) -> bool:
     """Persist a log line. Deduplicated on (run_id, seq) so a replayed step does
     not double-log into the run report."""

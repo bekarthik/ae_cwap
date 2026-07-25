@@ -23,6 +23,13 @@ export interface Position {
   y: number;
 }
 
+/** A second agent that has to approve a step's answer before it is used. */
+export interface ReviewConfig {
+  agent_id: string;
+  max_rounds: number;
+  approval_phrase: string;
+}
+
 export interface WorkflowNode {
   id: string;
   type: NodeType;
@@ -32,6 +39,8 @@ export interface WorkflowNode {
   knowledge_handle: string | null;
   /** Set on agent nodes: which stored agent staffs this step. */
   agent_id: string | null;
+  /** Optional quality loop: another agent reviews this step's answer. */
+  review: ReviewConfig | null;
 }
 
 export interface WorkflowEdge {

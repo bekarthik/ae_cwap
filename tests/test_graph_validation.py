@@ -60,13 +60,29 @@ class TestStructure:
 
 
 class TestFanOut:
-    def test_only_a_branch_node_may_fan_out(self):
-        with pytest.raises(ValidationError, match="only a branch"):
+    def test_a_node_may_fan_out_into_independent_work(self):
+        """v2 allowed one successor, which made every workflow a line. Two
+        pieces of work that do not depend on each other should not wait for
+        each other."""
+        result = graph(
+            [node("a", NodeType.INPUT), node("b"), node("c")],
+            [
+                WorkflowEdge(id="e1", source="a", target="b"),
+                WorkflowEdge(id="e2", source="a", target="c"),
+            ],
+        )
+
+        assert len(result.outgoing("a")) == 2
+
+    def test_two_edges_between_the_same_pair_are_refused(self):
+        """They would dispatch the same step twice and make a join wait for an
+        arrival that has already happened."""
+        with pytest.raises(ValidationError, match="duplicate edges"):
             graph(
-                [node("a", NodeType.INPUT), node("b"), node("c")],
+                [node("a", NodeType.INPUT), node("b")],
                 [
                     WorkflowEdge(id="e1", source="a", target="b"),
-                    WorkflowEdge(id="e2", source="a", target="c"),
+                    WorkflowEdge(id="e2", source="a", target="b"),
                 ],
             )
 

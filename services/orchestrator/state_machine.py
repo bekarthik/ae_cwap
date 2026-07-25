@@ -45,12 +45,24 @@ MAX_INLINE_BRANCHES = 16
 
 @dataclass
 class PlannedStep:
-    """The next dispatchable step, plus any branches resolved to reach it."""
+    """The steps that follow, plus any branches resolved to reach them.
 
-    next_step: NextStepDefinition
+    A list, because a node may fan out: two pieces of work that do not depend on
+    each other should not wait for each other. Each entry is still a single,
+    concrete, deterministic successor — what changed is how many of them one
+    completed step may produce, not what a job payload is allowed to say.
+    """
+
+    next_steps: list[NextStepDefinition] = field(default_factory=list)
     #: Branch decisions taken while planning — each becomes its own state row so
     #: the run report shows *why* the run took the path it did.
     branch_outputs: list[StepOutputContext] = field(default_factory=list)
+
+    @property
+    def terminal(self) -> bool:
+        """True when this node ends its path. Not the same as ending the run:
+        another branch may still be running elsewhere."""
+        return not self.next_steps or all(step.terminal for step in self.next_steps)
 
 
 def new_step_execution_id() -> str:
@@ -77,33 +89,67 @@ def plan_next(
     tenant_id: str,
     emit: Callable[..., None],
 ) -> PlannedStep:
-    """Decide what runs after `from_node_id` completes."""
+    """Decide what runs after `from_node_id` completes.
+
+    One entry per outgoing edge. A plain node with several edges fans out — all
+    of them run — while a branch node still chooses exactly one of its two, which
+    is resolved inline here rather than dispatched as its own job.
+    """
     branch_outputs: list[StepOutputContext] = []
 
     outgoing = graph.outgoing(from_node_id)
     if not outgoing:
         return PlannedStep(
-            next_step=NextStepDefinition(
-                target_service=ServiceName.TERMINAL, target_node_id=None, terminal=True
-            )
+            next_steps=[
+                NextStepDefinition(
+                    target_service=ServiceName.TERMINAL, target_node_id=None, terminal=True
+                )
+            ]
         )
 
-    # A non-branch node has at most one outgoing edge (enforced by WorkflowGraph),
-    # so following edge zero is the whole of deterministic pathing.
-    edge = outgoing[0]
+    steps: list[NextStepDefinition] = []
+    for edge in outgoing:
+        steps.append(
+            _follow(
+                graph,
+                edge=edge,
+                from_node_id=from_node_id,
+                context=context,
+                run_id=run_id,
+                tenant_id=tenant_id,
+                emit=emit,
+                branch_outputs=branch_outputs,
+            )
+        )
+    return PlannedStep(next_steps=steps, branch_outputs=branch_outputs)
 
+
+def _follow(
+    graph: WorkflowGraph,
+    *,
+    edge,
+    from_node_id: str,
+    context: RunContext,
+    run_id: str,
+    tenant_id: str,
+    emit: Callable[..., None],
+    branch_outputs: list[StepOutputContext],
+) -> NextStepDefinition:
+    """Walk one edge to the next node that actually does work.
+
+    Decision nodes are resolved on the way rather than queued: a branch performs
+    no external work, only a comparison of values already in run context, so
+    settling it here is what keeps every enqueued job a single concrete step.
+    """
     for hop in range(MAX_INLINE_BRANCHES + 1):
         target = graph.node(edge.target)
 
         if target.type is not NodeType.BRANCH:
-            return PlannedStep(
-                next_step=NextStepDefinition(
-                    target_service=NODE_TYPE_SERVICE[target.type],
-                    target_node_id=target.id,
-                    input_bindings=dict(edge.bindings),
-                    terminal=False,
-                ),
-                branch_outputs=branch_outputs,
+            return NextStepDefinition(
+                target_service=NODE_TYPE_SERVICE[target.type],
+                target_node_id=target.id,
+                input_bindings=dict(edge.bindings),
+                terminal=False,
             )
 
         if hop == MAX_INLINE_BRANCHES:

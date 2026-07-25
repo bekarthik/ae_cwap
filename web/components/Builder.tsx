@@ -248,6 +248,7 @@ function BuilderInner({ session, onSignOut }: Props) {
             params: structuredClone(kind.defaultParams),
             knowledgeHandle: null,
             agentId: null,
+            review: null,
           },
         },
       ]);

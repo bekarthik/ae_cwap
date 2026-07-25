@@ -339,8 +339,10 @@ def execute_agent(request: ExecutionRequest) -> ExecutionOutcome:
         data={"status": result.status, "skills_used": result.skills_used},
     )
 
+    reviewed = _review(request, agent, objective, result.text)
+
     return ExecutionOutcome(
-        output={"text": result.text},
+        output={"text": reviewed.text if reviewed else result.text},
         derived_context={
             "agent": agent.name,
             "agent_id": agent.id,
@@ -354,8 +356,68 @@ def execute_agent(request: ExecutionRequest) -> ExecutionOutcome:
             "turns": [turn.model_dump(mode="json") for turn in result.turns],
             # And, on a thinking model, what it worked through before each turn.
             "reasoning": result.reasoning,
+            **(
+                {
+                    "review": {
+                        "reviewer_id": request.node.review.agent_id,
+                        "rounds": reviewed.rounds,
+                        "approved": reviewed.approved,
+                        "notes": reviewed.notes,
+                    }
+                }
+                if reviewed
+                else {}
+            ),
         },
     )
+
+
+def _review(request: ExecutionRequest, agent, objective: str, draft: str):
+    """Run this step's quality loop, if it has one.
+
+    Returns None when the node nominates no reviewer, which is the normal case
+    and costs nothing — no lookup, no extra call, byte-identical behaviour.
+    """
+    config = request.node.review
+    if config is None:
+        return None
+
+    from agents import registry as agent_registry  # noqa: PLC0415 - avoid import cycle
+    from agents import runtime as agent_runtime  # noqa: PLC0415
+
+    from orchestrator import review as review_loop  # noqa: PLC0415
+
+    try:
+        reviewer = agent_registry.get(request.tenant_id, config.agent_id)
+    except agent_registry.AgentNotFound as exc:
+        raise NodeExecutionError(
+            f"node '{request.node.id}' names reviewer '{config.agent_id}', "
+            "which no longer exists"
+        ) from exc
+
+    context = agent_runtime.AgentRunContext(
+        tenant_id=request.tenant_id,
+        run_id=request.run_id,
+        step_execution_id=request.step_execution_id,
+        workflow_memory_scope=request.workflow_memory_scope,
+        allow_side_effects=request.allow_side_effects,
+        emit=request.emit,
+        stream=request.stream,
+    )
+
+    try:
+        return review_loop.run_loop(
+            config=config,
+            objective=objective,
+            draft=draft,
+            author=agent,
+            reviewer=reviewer,
+            run_agent=agent_runtime.run_agent,
+            context=context,
+            emit=request.emit,
+        )
+    except agent_runtime.AgentError as exc:
+        raise NodeExecutionError(f"the review of '{request.node.id}' failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
