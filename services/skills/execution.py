@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from cwap_contracts.v2 import (
+from cwap_contracts.v3 import (
     MemoryKind,
     MemoryScope,
     MemoryWriteRequest,
@@ -108,6 +108,9 @@ def _dispatch(
 
     if skill.kind is SkillKind.HTTP:
         return _run_http(skill, values, context)
+
+    if skill.kind is SkillKind.MCP:
+        return _run_mcp(skill, arguments, context)
 
     if skill.kind is SkillKind.COMPOSITE:
         return _run_composite(skill, values, context)
@@ -247,6 +250,116 @@ def _run_http(
             payload
         )
     return f"HTTP {payload['status']}\n{payload['body']}"
+
+
+def _run_mcp(
+    skill: SkillDefinition, arguments: dict[str, Any], context: SkillContext
+) -> str:
+    """Invoke one tool on a connected MCP server.
+
+    The arguments go through **unflattened**: the model was given the server's
+    own schema, so what it produced is what the server expects. Coercing them
+    through the platform's parameter list would break every tool that takes a
+    structured argument.
+
+    A write-capable tool needs the same write scope an HTTP node does — an agent
+    gets no privilege the user running it has. Tools the server itself marks
+    read-only are exempt, because reading a repository is not a side effect.
+    """
+    from mcp_connect.client import MCPError, get_client  # noqa: PLC0415
+    from mcp_connect.policy import MCPPolicyError  # noqa: PLC0415
+    from mcp_connect.registry import (  # noqa: PLC0415
+        MCPServerNotFound,  # noqa: PLC0415
+        credentials_for,
+    )
+    from mcp_connect.registry import get as get_server
+
+    if skill.definition.get("unavailable"):
+        raise SkillExecutionError(
+            f"'{skill.name}' is no longer offered by its server. Re-sync the "
+            "connection, or use a different capability."
+        )
+
+    read_only = bool(skill.definition.get("read_only"))
+    if not read_only and not context.allow_side_effects:
+        raise SkillExecutionError(
+            f"'{skill.name}' can change things outside the platform, and this run "
+            "has no write scope"
+        )
+
+    server_id = str(skill.definition["server_id"])
+    tool_name = str(skill.definition["tool_name"])
+
+    try:
+        server = get_server(context.tenant_id, server_id)
+    except MCPServerNotFound as exc:
+        raise SkillExecutionError(
+            f"the server behind '{skill.name}' is no longer connected"
+        ) from exc
+
+    if not server.enabled:
+        raise SkillExecutionError(f"the '{server.name}' connection is switched off")
+
+    # A write goes through the same two-phase gate an HTTP node does, so a
+    # redelivered job cannot open the same pull request twice.
+    gate_operation = f"mcp:{server_id}:{tool_name}:{_argument_digest(arguments)}"
+    claim = None
+    if not read_only and context.run_id:
+        from cwap_common.db import unit_of_work  # noqa: PLC0415
+        from cwap_common.idempotency import IdempotencyGate  # noqa: PLC0415
+
+        with unit_of_work() as session:
+            claim = IdempotencyGate(
+                session, context.run_id, context.step_execution_id, gate_operation
+            ).pre_check()
+        if not claim.should_execute:
+            return str(
+                (claim.prior_response or {}).get("output", "already performed")
+            )
+
+    try:
+        output = get_client().call_tool(
+            server_id,
+            server.config,
+            credentials_for(context.tenant_id, server_id),
+            tool_name,
+            arguments,
+        )
+    except (MCPError, MCPPolicyError) as exc:
+        if claim is not None:
+            from cwap_common.db import unit_of_work  # noqa: PLC0415
+            from cwap_common.idempotency import IdempotencyGate  # noqa: PLC0415
+
+            with unit_of_work() as session:
+                IdempotencyGate(
+                    session, context.run_id, context.step_execution_id, gate_operation
+                ).abandon(str(exc))
+        raise SkillExecutionError(str(exc)) from exc
+
+    if claim is not None:
+        from cwap_common.db import unit_of_work  # noqa: PLC0415
+        from cwap_common.idempotency import IdempotencyGate  # noqa: PLC0415
+
+        with unit_of_work() as session:
+            IdempotencyGate(
+                session, context.run_id, context.step_execution_id, gate_operation
+            ).commit({"output": output[:MAX_SKILL_OUTPUT_CHARS]})
+
+    return output or "(the tool returned nothing)"
+
+
+def _argument_digest(arguments: dict[str, Any]) -> str:
+    """A stable fingerprint of one call's arguments.
+
+    Part of the idempotency key so that calling the same tool twice with
+    *different* arguments in one step is two operations, while a redelivery of
+    the same call is one.
+    """
+    import hashlib  # noqa: PLC0415
+    import json  # noqa: PLC0415
+
+    encoded = json.dumps(arguments or {}, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode()).hexdigest()[:16]
 
 
 def _run_composite(

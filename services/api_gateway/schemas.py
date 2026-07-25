@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from cwap_contracts.v2 import (
+from cwap_contracts.v3 import (
     ClarifyingQuestion,
     DesignStage,
     PlannedAgent,

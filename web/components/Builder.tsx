@@ -43,6 +43,7 @@ import type {
 
 import { DesignModal } from './DesignModal';
 import { Inspector } from './Inspector';
+import { ConnectorPanel } from './ConnectorPanel';
 import { ModelPicker } from './ModelPicker';
 import { KnowledgePanel } from './KnowledgePanel';
 import { RosterPanel } from './RosterPanel';
@@ -457,6 +458,8 @@ function BuilderInner({ session, onSignOut }: Props) {
           </div>
 
           <RosterPanel agents={agents} skills={skills} onChanged={refreshLists} />
+
+          <ConnectorPanel onChanged={refreshLists} />
 
           <KnowledgePanel corpora={corpora} onChanged={refreshLists} />
 

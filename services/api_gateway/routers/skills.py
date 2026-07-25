@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cwap_contracts.v2 import MemoryScope, SkillDefinition, SkillProposal
+from cwap_contracts.v3 import MemoryScope, SkillDefinition, SkillProposal
 from fastapi import APIRouter, Depends, HTTPException
 from knowledge.service import list_handles
 from memory import service as memory_service

@@ -24,7 +24,7 @@ from cwap_common.idempotency import commit_step_output
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, WorkflowExecutionState
 from cwap_common.settings import get_settings
-from cwap_contracts.v2 import (
+from cwap_contracts.v3 import (
     ExecutionState,
     JobContext,
     LogLevel,

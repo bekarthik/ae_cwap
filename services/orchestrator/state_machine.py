@@ -17,7 +17,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from cwap_contracts.v2 import (
+from cwap_contracts.v3 import (
     NODE_TYPE_RESULT_STATE,
     NODE_TYPE_SERVICE,
     ExecutionState,

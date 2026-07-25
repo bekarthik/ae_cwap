@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from cwap_contracts.v2 import (
+from cwap_contracts.v3 import (
     AgentDefinition,
     AgentTurn,
     MemoryKind,

@@ -8,7 +8,7 @@ straight to a design for callers that want the old one-shot behaviour.
 
 from __future__ import annotations
 
-from cwap_contracts.v2 import DesignRequest
+from cwap_contracts.v3 import DesignRequest
 from design.service import design
 from fastapi import APIRouter, Depends
 from knowledge.service import list_handles

@@ -28,7 +28,7 @@ import re
 import uuid
 
 from agents import registry as agent_registry
-from cwap_contracts.v2 import (
+from cwap_contracts.v3 import (
     AgentMemoryConfig,
     ClarifyingQuestion,
     DesignRequest,
@@ -379,7 +379,7 @@ def _resolve_skills(
 
 def _ensure_retrieval_skill(tenant_id: str, handle: str):
     """A search capability over one corpus, created once and reused."""
-    from cwap_contracts.v2 import SkillKind, SkillParameter, SkillProposal  # noqa: PLC0415
+    from cwap_contracts.v3 import SkillKind, SkillParameter, SkillProposal  # noqa: PLC0415
 
     name = f"search_documents_{handle[-8:]}"
     existing = skill_registry.find_by_name(tenant_id, name)

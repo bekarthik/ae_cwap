@@ -113,8 +113,56 @@ export interface AgentDefinition {
   version: number;
 }
 
-export type SkillKind = 'prompt' | 'retrieval' | 'http' | 'transform' | 'composite';
-export type SkillOrigin = 'builtin' | 'user' | 'synthesized';
+export type SkillKind =
+  | 'prompt'
+  | 'retrieval'
+  | 'http'
+  | 'transform'
+  | 'composite'
+  /** One tool on a connected MCP server. */
+  | 'mcp';
+export type SkillOrigin = 'builtin' | 'user' | 'synthesized' | 'mcp';
+
+/* -- MCP connectors ----------------------------------------------------- */
+
+export type MCPTransport = 'stdio' | 'http';
+
+export interface MCPServerConfig {
+  transport: MCPTransport;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  url: string;
+}
+
+export interface MCPTool {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  /** Servers mark tools they know do not change anything. */
+  read_only: boolean;
+}
+
+export interface MCPServerRecord {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string;
+  config: MCPServerConfig;
+  enabled: boolean;
+  /** Whether a credential is stored. Never the credential itself. */
+  has_credentials: boolean;
+  tools: MCPTool[];
+  last_connected_at: string;
+  last_error: string;
+}
+
+/** What this deployment permits connecting to. */
+export interface MCPPolicy {
+  stdio_enabled: boolean;
+  allowed_commands: string[];
+  allowed_hosts: string[];
+}
 
 export interface SkillParameter {
   name: string;

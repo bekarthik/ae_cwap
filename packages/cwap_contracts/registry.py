@@ -130,8 +130,30 @@ def _register_v2() -> None:
         register(model, version="v2")
 
 
+def _register_v3() -> None:
+    """MCP connectors.
+
+    Only the skill contracts changed shape, so only they are re-registered under
+    v3 — everything else a v3 caller imports is the v2 model, already registered.
+    Re-registering unchanged models under a new version would imply a change
+    nobody made and would double the surface the lock has to approve.
+    """
+    from cwap_contracts import v3
+
+    for model in (
+        v3.MCPConnectionResult,
+        v3.MCPServerConfig,
+        v3.MCPServerRecord,
+        v3.MCPTool,
+        v3.SkillDefinition,
+        v3.SkillProposal,
+    ):
+        register(model, version="v3")
+
+
 _register_v1()
 _register_v2()
+_register_v3()
 
 
 if __name__ == "__main__":  # pragma: no cover - maintenance entry point

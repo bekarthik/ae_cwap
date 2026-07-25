@@ -11,7 +11,7 @@ import uuid
 
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import Agent as AgentRow
-from cwap_contracts.v2 import AgentDefinition, AgentMemoryConfig
+from cwap_contracts.v3 import AgentDefinition, AgentMemoryConfig
 
 
 class AgentNotFound(LookupError):

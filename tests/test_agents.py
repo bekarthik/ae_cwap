@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 from agents import registry as agent_registry
 from agents import runtime
-from cwap_contracts.v2 import MemoryScope, SkillKind, SkillParameter, SkillProposal
+from cwap_contracts.v3 import MemoryScope, SkillKind, SkillParameter, SkillProposal
 from llm_proxy.client import (
     LLMCompletion,
     LLMProxyError,
@@ -370,7 +370,7 @@ class TestAgentMemory:
         assert "Denver" in provider.systems[0]
 
     def test_an_agent_can_be_told_not_to_write_learnings(self, skills):
-        from cwap_contracts.v2 import AgentMemoryConfig
+        from cwap_contracts.v3 import AgentMemoryConfig
 
         quiet = agent_registry.create(
             TENANT,

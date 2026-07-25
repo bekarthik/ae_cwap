@@ -12,7 +12,7 @@ import asyncio
 from cwap_common.db import read_only_session
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, Workflow, WorkflowExecutionState
-from cwap_contracts.v2 import NodeType, WorkflowGraph
+from cwap_contracts.v3 import NodeType, WorkflowGraph
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from orchestrator.runner import start_run
 
@@ -50,7 +50,7 @@ def _needs_write_scope(graph: WorkflowGraph, tenant_id: str) -> bool:
 
 def _agent_can_reach_outward(node, tenant_id: str) -> bool:
     from agents import registry as agent_registry  # noqa: PLC0415
-    from cwap_contracts.v2 import SkillKind  # noqa: PLC0415
+    from cwap_contracts.v3 import SIDE_EFFECTING_KINDS  # noqa: PLC0415
     from skills import registry as skill_registry  # noqa: PLC0415
 
     if node.type is not NodeType.AGENT or not node.agent_id:
@@ -59,10 +59,17 @@ def _agent_can_reach_outward(node, tenant_id: str) -> bool:
         agent = agent_registry.get(tenant_id, node.agent_id)
     except agent_registry.AgentNotFound:
         return False
-    return any(
-        skill.kind is SkillKind.HTTP
-        for skill in skill_registry.get_many(tenant_id, agent.skill_ids)
-    )
+
+    for skill in skill_registry.get_many(tenant_id, agent.skill_ids):
+        if skill.kind not in SIDE_EFFECTING_KINDS:
+            continue
+        # A server that marks a tool read-only is telling us it does not change
+        # anything. Demanding a write scope to *read* a repository would make
+        # the common MCP case need a privilege it never uses.
+        if skill.definition.get("read_only"):
+            continue
+        return True
+    return False
 
 
 @router.post("/api/workflows/{workflow_id}/runs", response_model=RunSummary, status_code=202)

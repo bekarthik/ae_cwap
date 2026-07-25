@@ -9,6 +9,10 @@
 
 import type {
   AgentDefinition,
+  MCPPolicy,
+  MCPServerConfig,
+  MCPServerRecord,
+  MCPTool,
   DetectedModel,
   ModelConfiguration,
   DesignResponse,
@@ -213,6 +217,44 @@ export const api = {
     }),
 
   deleteSkill: (id: string) => request<void>(`/api/skills/${id}`, { method: 'DELETE' }),
+
+  /* -- MCP connectors -------------------------------------------------- */
+
+  listMcpServers: () =>
+    request<{ servers: MCPServerRecord[]; policy: MCPPolicy }>('/api/mcp'),
+
+  /** Try a server without storing anything. */
+  testMcpServer: (config: MCPServerConfig, credentials: Record<string, string> = {}) =>
+    request<{ ok: boolean; message: string; tools: MCPTool[]; blocked: boolean }>(
+      '/api/mcp/test',
+      { method: 'POST', body: JSON.stringify({ config, credentials }) },
+    ),
+
+  /** Verify, store, and import the server's tools as skills. */
+  connectMcpServer: (body: {
+    name: string;
+    description: string;
+    config: MCPServerConfig;
+    credentials: Record<string, string>;
+  }) =>
+    request<{ ok: boolean; message: string; tools: MCPTool[] }>('/api/mcp', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  /** Re-read the tool list, picking up what the server gained or lost. */
+  syncMcpServer: (id: string) =>
+    request<{ skills: number; server: MCPServerRecord }>(`/api/mcp/${id}/sync`, {
+      method: 'POST',
+    }),
+
+  setMcpServerEnabled: (id: string, enabled: boolean) =>
+    request<MCPServerRecord>(`/api/mcp/${id}/enabled?enabled=${enabled}`, {
+      method: 'POST',
+    }),
+
+  disconnectMcpServer: (id: string) =>
+    request<void>(`/api/mcp/${id}`, { method: 'DELETE' }),
 
   listMemory: (scope: MemoryScope, scopeId: string) =>
     request<MemoryEntry[]>(

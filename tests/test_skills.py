@@ -11,7 +11,7 @@ It is never code, and it is never an outbound network call.
 from __future__ import annotations
 
 import pytest
-from cwap_contracts.v2 import (
+from cwap_contracts.v3 import (
     MemoryScope,
     SkillKind,
     SkillOrigin,

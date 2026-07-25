@@ -8,7 +8,7 @@ memory or be improved once and used everywhere.
 from __future__ import annotations
 
 from agents import registry
-from cwap_contracts.v2 import AgentDefinition, AgentMemoryConfig, MemoryScope
+from cwap_contracts.v3 import AgentDefinition, AgentMemoryConfig, MemoryScope
 from fastapi import APIRouter, Depends, HTTPException
 from memory import service as memory_service
 from pydantic import BaseModel, ConfigDict, Field
