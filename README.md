@@ -347,12 +347,28 @@ node does and passes the same two-phase gate, so a redelivered step cannot open
 two pull requests. Tools a server marks read-only are exempt — reading a
 repository is not a side effect.
 
-**When a connection fails, the error says which kind of failure it was.**
-Reaching the host is bounded separately (`CWAP_MCP_CONNECT_TIMEOUT`, 10s) from
-waiting for it to answer (`CWAP_MCP_TIMEOUT`, 60s), because those have different
-remedies: an unreachable host means the URL is wrong or the deployment has no
-egress, and waiting longer will never help; a server that accepted the
-connection and went quiet is the one worth waiting for.
+**When a connection fails, the error says which kind of failure it was.** One
+timeout covering everything reported four different problems with one sentence,
+and none of the four remedies is the same:
+
+| What happened | What it says | What to do |
+| --- | --- | --- |
+| The host never answers a SYN | *could not reach the host* (10s) | Fix the URL, or the deployment's egress |
+| It answers with a page, not MCP | *that URL answered, but not with MCP* | It is a login page, a proxy, or the wrong URL |
+| The handshake stalls | *stopped responding while completing the MCP handshake* | Probably not an MCP endpoint; or raise `CWAP_MCP_TIMEOUT` |
+| The handshake works, listing stalls | *stopped responding while listing its tools* | Your setup is fine — see below |
+
+That last row is a known defect in the MCP client library rather than anything
+about your server ([python-sdk#1941](https://github.com/modelcontextprotocol/python-sdk/issues/1941)):
+a server that declines the *optional* server-to-client stream — GitHub's does,
+with a `405` — can stall the client on the request after the handshake. Raising
+`CWAP_MCP_TIMEOUT` is the workaround, and the error says so rather than leaving
+someone re-checking a URL that was never wrong.
+
+An endpoint that replies `200 OK` with an HTML page is worth calling out
+separately: the client library reports that by posting an error into a stream
+nobody reads, so the request waits forever without ever failing. That is why a
+proxy's login page used to look exactly like a server that had gone silent.
 
 ---
 

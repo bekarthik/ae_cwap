@@ -546,6 +546,51 @@ deployment reach" as well as an allow-list does, in a reviewed file rather than
 in a text box. An HTTP *node* gets no exemption at all, an unlisted MCP host is
 gated exactly as before, and `CWAP_MCP_DIRECTORY=off` removes the exemption.
 
+### An MCP connection fails in four distinguishable ways
+
+`mcp_connect/client.py` bounds a connection with more than one deadline, which
+is worth explaining because a single one looks simpler and was actively
+misleading.
+
+```
+reach the host        REACH_TIMEOUT (10s)   → could not reach the host
+  │                                            (URL, DNS, or egress)
+  ▼
+answer with MCP       (no deadline — it       → that URL answered, but not
+  │                    either does or does       with MCP (login page? proxy?)
+  │                    not)
+  ▼
+handshake             ┐                      → stopped responding while
+  │                   ├ CONNECT_TIMEOUT (60s)   completing the handshake
+  ▼                   │  shared between them
+list tools            ┘                      → stopped responding while
+                                                listing its tools
+```
+
+Every deadline sits strictly inside the next one out. When the outer wall was
+equal to the SDK's own 30s default, the two fired together and the vaguer
+message won — so a host that could not be reached and a server that had gone
+quiet produced the same sentence after the same thirty seconds.
+
+The two content faults are the interesting ones, because neither is a timeout:
+
+* **Not MCP at all.** The SDK reports an unusable content type by *sending a
+  `ValueError` into the read stream*, and `ClientSession`'s default message
+  handler discards it. The pending request is never answered and never fails —
+  it waits. Passing a `message_handler` that fails the connection is what turns
+  that permanent wait into an immediate, accurate error.
+* **A stall after the handshake.** A server may decline the optional
+  server-to-client GET stream; GitHub's answers `405`. That is spec-legal, and
+  it can stall the client library on the *next* request
+  ([python-sdk#1941](https://github.com/modelcontextprotocol/python-sdk/issues/1941)).
+  The platform cannot fix the library, but it can tell the difference between
+  "your URL is wrong" and "your setup is fine and this is a known upstream
+  defect" — which are opposite instructions to give somebody.
+
+`tests/test_mcp_http.py` runs against two real servers for this: one that offers
+the GET stream and one that refuses it. Until it existed, every MCP test used
+stdio, so the transport every hosted server actually uses had no coverage at all.
+
 ### Schema growth
 
 `create_all` only creates whole tables, so a release that adds a column to an

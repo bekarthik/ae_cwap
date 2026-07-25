@@ -60,11 +60,20 @@ CALL_TIMEOUT = _seconds("CWAP_MCP_CALL_TIMEOUT", 120.0)
 #: going to.
 REACH_TIMEOUT = _seconds("CWAP_MCP_CONNECT_TIMEOUT", 10.0)
 
-#: Added to the transport's own deadline to get the outer one. The outer wall
-#: must fire *after* the transport, or it pre-empts a specific, actionable error
-#: ("the connection timed out") with a generic one ("did not respond") — which
-#: is precisely what a blanket timeout equal to the SDK's default did.
+#: Added to an inner deadline to get the outer one. Every wall in this module
+#: must fire *after* the thing it is backstopping, or it pre-empts a specific,
+#: actionable error with a generic one — which is precisely what a blanket
+#: timeout equal to the SDK's own default did.
 GRACE = 10.0
+
+
+def connect_wall() -> float:
+    """The outer deadline for opening a connection.
+
+    Above `CONNECT_TIMEOUT`, which is what the two phases inside share, so a
+    phase that stalls gets to say which phase it was before this fires.
+    """
+    return CONNECT_TIMEOUT + GRACE
 
 
 class MCPError(RuntimeError):
@@ -90,6 +99,60 @@ _SILENT_FAULTS = {
 }
 
 
+#: Faults the transport describes in its own vocabulary, and what they mean to
+#: whoever typed the URL. Matched as substrings of the SDK's own message, and
+#: the SDK's wording is kept inside the explanation rather than replaced — a
+#: user pasting an error into a search engine should still find the library.
+_INTERPRETATIONS: tuple[tuple[str, str], ...] = (
+    (
+        "unexpected content type",
+        "that URL answered, but not with MCP ({detail}). An MCP endpoint replies "
+        "as JSON or as an event stream; HTML usually means a login page, a proxy "
+        "sitting in front of the host, or simply a URL that is not an MCP endpoint",
+    ),
+    (
+        "session terminated",
+        "the server rejected the session for that URL. Check the path — this is "
+        "what a 404 looks like once the protocol has started",
+    ),
+)
+
+
+def _interpret(error: BaseException) -> str:
+    """Say what one fault means, keeping whatever the transport said about it.
+
+    The single place a raw exception becomes a sentence, whether it arrived by
+    being raised or by being posted into the read stream. Those are two routes
+    for the same faults, and giving them two vocabularies would mean a 404
+    reading one way during the handshake and another way afterwards.
+    """
+    name = type(error).__name__
+    detail = str(error).strip() or _SILENT_FAULTS.get(name) or name
+    lowered = detail.lower()
+    for marker, template in _INTERPRETATIONS:
+        if marker in lowered:
+            return template.format(detail=detail)
+    return detail
+
+
+def already_explained(exc: BaseException) -> MCPError | None:
+    """An `MCPError` this module raised, dug back out of whatever boxed it.
+
+    A phase timeout is raised inside the transport's anyio task group, so what
+    reaches the caller is an ExceptionGroup rather than the error. Wrapping that
+    in "could not connect to <url>: ..." produced a message naming the URL
+    twice and burying the sentence that mattered. If we already said something
+    useful, that is the message.
+    """
+    if isinstance(exc, MCPError):
+        return exc
+    for inner in getattr(exc, "exceptions", None) or ():
+        found = already_explained(inner)
+        if found is not None:
+            return found
+    return None
+
+
 def explain(exc: BaseException) -> str:
     """A message a person can act on, out of whatever the SDK raised.
 
@@ -108,14 +171,20 @@ def explain(exc: BaseException) -> str:
             for sub in inner:
                 walk(sub)
             return
-        name = type(error).__name__
-        text = str(error).strip() or _SILENT_FAULTS.get(name) or name
+        text = _interpret(error)
         if text not in leaves:
             leaves.append(text)
 
     walk(exc)
     # Three is enough to see a pattern without pasting a stack into a dialog.
     return "; ".join(leaves[:3]) or f"{type(exc).__name__}"
+
+
+def _failure(exc: BaseException, config: MCPServerConfig) -> MCPError:
+    """The error to hand back after a connection attempt has come apart."""
+    return already_explained(exc) or MCPError(
+        f"could not connect to {_target(config)}: {explain(exc)}"
+    )
 
 
 def _target(config: MCPServerConfig) -> str:
@@ -241,11 +310,11 @@ class MCPClient:
         """Connect, list tools, disconnect. Used to verify a server before saving."""
         assert_permitted(config)
         try:
-            return _thread.submit(_probe(config, credentials), CONNECT_TIMEOUT)
+            return _thread.submit(_probe(config, credentials), connect_wall())
         except (MCPError, MCPPolicyError):
             raise
         except BaseException as exc:  # noqa: BLE001 - includes ExceptionGroup
-            raise MCPError(f"could not connect to {_target(config)}: {explain(exc)}") from exc
+            raise _failure(exc, config) from exc
 
     def disconnect(self, server_id: str) -> None:
         with self._lock:
@@ -274,11 +343,11 @@ class MCPClient:
 
         assert_permitted(config)
         try:
-            entry = _thread.submit(_connect(config, credentials), CONNECT_TIMEOUT)
+            entry = _thread.submit(_connect(config, credentials), connect_wall())
         except MCPError:
             raise
         except BaseException as exc:  # noqa: BLE001 - includes ExceptionGroup
-            raise MCPError(f"could not connect to {_target(config)}: {explain(exc)}") from exc
+            raise _failure(exc, config) from exc
 
         with self._lock:
             # Another thread may have connected while this one was waiting; keep
@@ -288,6 +357,46 @@ class MCPClient:
             with contextlib.suppress(Exception):
                 _thread.submit(_shutdown(entry), 15.0)
         return winner
+
+
+#: The two phases of opening a connection, and what a stall in each one means.
+#:
+#: Splitting them is not tidiness. A server that never completes the handshake
+#: and a server that completes it and then stalls listing its tools are
+#: different problems with different causes, and reporting both as "the MCP
+#: server did not respond" told a user neither which one they had nor that the
+#: second is a known defect in the client library rather than in their setup.
+HANDSHAKE = (
+    "completing the MCP handshake",
+    "The host answered, so the URL and the network are fine. A handshake that "
+    "then stalls usually means the endpoint is not an MCP server, or a proxy is "
+    "sitting between this deployment and it. If the server is merely slow, "
+    "raise CWAP_MCP_TIMEOUT.",
+)
+LISTING = (
+    "listing its tools",
+    "The handshake succeeded, so the URL and the credential are both good. "
+    "Servers that decline the optional server-to-client stream — GitHub's is "
+    "one — can stall the MCP client library on the request after the handshake "
+    "(modelcontextprotocol/python-sdk#1941). Raising CWAP_MCP_TIMEOUT gives it "
+    "longer to get through.",
+)
+
+
+async def _phase(
+    phase: tuple[str, str],
+    awaitable: Any,
+    budget: float,
+    config: MCPServerConfig,
+) -> Any:
+    """Run one phase of the connection under its own share of the budget."""
+    what, why = phase
+    try:
+        return await asyncio.wait_for(awaitable, max(budget, 1.0))
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        raise MCPError(
+            f"{_target(config)} stopped responding while {what}. {why}"
+        ) from exc
 
 
 async def _own_connection(
@@ -304,12 +413,50 @@ async def _own_connection(
     """
     from mcp import ClientSession  # noqa: PLC0415
 
+    async def transport_fault(message: Any) -> None:
+        """Fail the connection when the transport reports a fault as a message.
+
+        The SDK does not raise for everything that goes wrong. A response with
+        an unusable content type — an HTML login page, a proxy's error page,
+        a URL that is not an MCP endpoint at all — is reported by *sending a
+        ValueError into the read stream*, which the default message handler
+        drops on the floor. The `initialize()` call is still waiting for its
+        response, and no response is ever coming, so the connection hangs until
+        something outside kills it.
+
+        That is what "the MCP server did not respond" was hiding: a server that
+        answered instantly with the wrong thing, described as one that said
+        nothing at all. The information was there and nobody was listening.
+        """
+        if not isinstance(message, Exception):
+            return
+
+        detail = _interpret(message)
+        logger.warning("MCP transport fault from %s: %s", _target(config), detail)
+        if not ready.done():
+            ready.set_exception(MCPError(detail))
+        # Mid-session rather than during the handshake: the connection is no
+        # longer trustworthy, so drop it and let the next call reconnect.
+        stop.set()
+
     try:
         async with AsyncExitStack() as stack:
             read, write = await _open_transport(stack, config, credentials)
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            listing = await session.list_tools()
+            session = await stack.enter_async_context(
+                ClientSession(read, write, message_handler=transport_fault)
+            )
+
+            # One budget for the whole connection, spent across two phases that
+            # are timed separately. Which of the two stalled is the single most
+            # useful thing an error can say here — see `_phase`.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + CONNECT_TIMEOUT
+
+            await _phase(HANDSHAKE, session.initialize(), deadline - loop.time(), config)
+            listing = await _phase(
+                LISTING, session.list_tools(), deadline - loop.time(), config
+            )
+
             if not ready.done():
                 ready.set_result((session, _to_tools(listing)))
             await stop.wait()

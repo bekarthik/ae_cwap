@@ -140,7 +140,7 @@ class TestAQuietServerSaysSomethingElse:
             mcp_client.get_client().probe(http(wedged), {})
 
         message = str(raised.value)
-        assert "did not respond within" in message
+        assert "stopped responding" in message
         assert "could not reach the host" not in message
 
     def test_it_names_the_setting_that_would_wait_longer(self, monkeypatch, wedged):
@@ -149,6 +149,17 @@ class TestAQuietServerSaysSomethingElse:
 
         with pytest.raises(MCPError, match="CWAP_MCP_TIMEOUT"):
             mcp_client.get_client().probe(http(wedged), {})
+
+    def test_the_url_is_named_once(self, monkeypatch, wedged):
+        """A phase error is raised inside the transport's task group, so it
+        comes back boxed. Re-wrapping it named the URL twice and buried the
+        sentence that mattered underneath a second, vaguer one."""
+        monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 2.0)
+
+        with pytest.raises(MCPError) as raised:
+            mcp_client.get_client().probe(http(wedged), {})
+
+        assert str(raised.value).count(wedged) == 1
 
     def test_a_timed_out_attempt_does_not_stay_running(self, monkeypatch, wedged):
         """`Future.cancel()` is a no-op once a coroutine has started, so every
