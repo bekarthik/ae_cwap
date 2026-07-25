@@ -17,15 +17,15 @@ import os
 import threading
 from contextlib import asynccontextmanager
 
+from cwap_common.db import init_db
+from cwap_common.settings import get_settings
+from cwap_contracts import AuthorizationFailure, ContractViolation, CwapContractError
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from api_gateway.routers import ALL_ROUTERS
 from api_gateway.security import bootstrap_demo_user
-from cwap_common.db import init_db
-from cwap_common.settings import get_settings
-from cwap_contracts import AuthorizationFailure, ContractViolation, CwapContractError
 
 logger = logging.getLogger("cwap.gateway")
 
@@ -33,8 +33,14 @@ API_TITLE = "AI Cognitive Workflow Platform"
 API_VERSION = "0.1.0"
 
 
+#: Both spellings of the local dev frontend. A browser treats them as distinct
+#: origins, and getting a CORS error because you typed 127.0.0.1 instead of
+#: localhost is a pointless five minutes for anyone setting the project up.
+DEFAULT_CORS_ORIGINS = "http://localhost:3000,http://127.0.0.1:3000"
+
+
 def _allowed_origins() -> list[str]:
-    raw = os.environ.get("CWAP_CORS_ORIGINS", "http://localhost:3000")
+    raw = os.environ.get("CWAP_CORS_ORIGINS", DEFAULT_CORS_ORIGINS)
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 

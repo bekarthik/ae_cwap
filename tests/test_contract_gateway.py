@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from cwap_common.authz import LocalAuthorizationService
 from cwap_common.contract_gateway import (
     ConsumerWrapper,

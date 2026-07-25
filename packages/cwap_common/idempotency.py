@@ -18,13 +18,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from cwap_contracts import LogEvent, StepOutputContext
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from cwap_common.models import IdempotencyLedger, RunLog, WorkflowExecutionState
-from cwap_contracts import LogEvent, StepOutputContext
 
 CLAIM_IN_FLIGHT = "IN_FLIGHT"
 CLAIM_SUCCEEDED = "SUCCEEDED"

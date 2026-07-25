@@ -1,0 +1,14 @@
+line-length = 100
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "PLC"]
+ignore = [
+    "E501",    # line length is handled by the formatter, not the linter
+    "B008",    # FastAPI's Depends() in a default argument is the framework idiom
+    "PLC0415", # deliberate local imports: optional deps and import-cycle breaks
+]
+
+[lint.per-file-ignores]
+# Tests deliberately assert on broad failures and re-export fixtures.
+"tests/*" = ["B017", "F811"]

@@ -29,16 +29,15 @@ from cwap_contracts import (
     JobContext,
     LogLevel,
     NodeType,
-    ServiceName,
     StepOutputContext,
     WorkflowGraph,
     WorkflowJobPayload,
 )
+
 from orchestrator.executors import ExecutionRequest, NodeExecutionError, executor_for
 from orchestrator.state_machine import (
     build_payload,
     initial_step,
-    new_step_execution_id,
     plan_next,
     result_state_for,
 )
@@ -225,13 +224,24 @@ class Worker:
             duration_ms=duration_ms,
         )
 
-        # One transaction for the whole step: state row + progress counter.
+        # One transaction for the whole step: state row + progress counter, plus
+        # the run's effective inputs when this was the entry node.
         with unit_of_work() as session:
             first_write = commit_step_output(session, step_output)
             if first_write:
-                session.query(Run).filter(Run.id == payload.run_id).update(
-                    {Run.steps_executed: Run.steps_executed + 1, Run.status: RUN_RUNNING}
-                )
+                changes: dict[Any, Any] = {
+                    Run.steps_executed: Run.steps_executed + 1,
+                    Run.status: RUN_RUNNING,
+                }
+                if node.type is NodeType.INPUT:
+                    # The entry node merges declared defaults with whatever the
+                    # caller supplied; that merged set is what `$run.input.*`
+                    # must mean for the rest of the run. Persisting it also
+                    # means a worker that picks up a later step on another
+                    # process reconstructs the same inputs.
+                    changes[Run.inputs] = outcome.output
+                    context.inputs = dict(outcome.output)
+                session.query(Run).filter(Run.id == payload.run_id).update(changes)
 
         if not first_write:
             emit(

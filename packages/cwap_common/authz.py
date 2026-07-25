@@ -14,10 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from cwap_contracts import JobContext, ServiceName
 from sqlalchemy.orm import Session
 
 from cwap_common.models import User
-from cwap_contracts import JobContext, ServiceName
 
 #: Minimum permission shape a target service demands of any job routed to it.
 #: HTTP_CONNECTOR is the sharp one: a node that can cause an external side

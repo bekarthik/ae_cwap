@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from pydantic import ValidationError
-
 from cwap_contracts import (
     LEGAL_TRANSITIONS,
     TERMINAL_STATES,
@@ -20,9 +18,15 @@ from cwap_contracts import (
     ServiceName,
     WorkflowJobPayload,
 )
-from cwap_contracts.registry import CONTRACT_REGISTRY, fingerprint, lock_snapshot, read_lock
-from cwap_contracts.registry import resolve
 from cwap_contracts.errors import SchemaNotRegistered
+from cwap_contracts.registry import (
+    CONTRACT_REGISTRY,
+    fingerprint,
+    lock_snapshot,
+    read_lock,
+    resolve,
+)
+from pydantic import ValidationError
 
 
 def _context(**overrides) -> JobContext:

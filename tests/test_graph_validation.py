@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from cwap_contracts import NodeType, WorkflowEdge, WorkflowGraph, WorkflowNode
+from pydantic import ValidationError
 
 
 def graph(nodes, edges, **kwargs) -> WorkflowGraph:

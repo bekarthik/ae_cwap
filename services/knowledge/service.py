@@ -25,6 +25,7 @@ from cwap_contracts import (
     RetrievalResult,
     RetrievedChunk,
 )
+
 from knowledge.embeddings import cosine_similarity, get_embedder
 
 #: Prefer to break a chunk at a paragraph or sentence boundary rather than

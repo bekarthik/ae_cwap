@@ -18,14 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import suppress
 from typing import Any
 
+from cwap_contracts import LogEvent, LogLevel
 from sqlalchemy import func
 
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.idempotency import append_log
 from cwap_common.models import RunLog
-from cwap_contracts import LogEvent, LogLevel
 
 #: Bound on per-run fan-out buffers, so a disconnected browser cannot grow
 #: memory without limit.
@@ -153,14 +154,14 @@ def _offer(queue: asyncio.Queue, record: LogEvent) -> None:
     """Never block the producer. A subscriber that cannot keep up drops its
     oldest event and carries on — the durable copy is already in Postgres."""
     if queue.full():
-        try:
+        # Race with the consumer: it drained the queue between the check and
+        # here. Nothing to drop, so carry on.
+        with suppress(asyncio.QueueEmpty):
             queue.get_nowait()
-        except asyncio.QueueEmpty:  # pragma: no cover - race with the consumer
-            pass
-    try:
+    # Race with another producer that refilled it. The durable copy is already
+    # in the database, so dropping the live event is acceptable.
+    with suppress(asyncio.QueueFull):
         queue.put_nowait(record)
-    except asyncio.QueueFull:  # pragma: no cover - race with another producer
-        pass
 
 
 #: Header/param names whose values must never reach a log line or the browser.

@@ -8,9 +8,9 @@ that runs the two-phase idempotency gate from mandate §3.A.
 
 from __future__ import annotations
 
-import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from cwap_common.db import unit_of_work
@@ -19,6 +19,7 @@ from cwap_common.settings import get_settings
 from cwap_contracts import LogLevel, NodeType, RetrievalRequest
 from knowledge.service import KnowledgeError, retrieve
 from llm_proxy.client import LLMProxyError, LLMRefusal, get_provider
+
 from orchestrator.variables import BindingError, RunContext, render_template, resolve
 
 

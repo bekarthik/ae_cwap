@@ -14,8 +14,8 @@ property mandate §1.5 is asking for.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from cwap_contracts import (
     NODE_TYPE_RESULT_STATE,
@@ -29,6 +29,7 @@ from cwap_contracts import (
     WorkflowGraph,
     WorkflowJobPayload,
 )
+
 from orchestrator.executors import (
     ExecutionOutcome,
     ExecutionRequest,

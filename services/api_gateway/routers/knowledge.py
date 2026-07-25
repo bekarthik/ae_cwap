@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from cwap_contracts import IngestRequest, KnowledgeHandle, RetrievalRequest, RetrievalResult
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from knowledge.service import KnowledgeError, delete, ingest, list_handles, retrieve
 
 from api_gateway.schemas import IngestTextRequest, KnowledgeSummary, RetrievePreviewRequest
 from api_gateway.security import Principal, current_principal
-from cwap_contracts import IngestRequest, KnowledgeHandle, RetrievalRequest, RetrievalResult
-from knowledge.service import KnowledgeError, delete, ingest, list_handles, retrieve
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 

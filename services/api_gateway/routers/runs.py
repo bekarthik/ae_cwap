@@ -9,7 +9,12 @@ from __future__ import annotations
 
 import asyncio
 
+from cwap_common.db import read_only_session
+from cwap_common.logbus import log_bus
+from cwap_common.models import Run, Workflow, WorkflowExecutionState
+from cwap_contracts import NodeType, WorkflowGraph
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from orchestrator.runner import start_run
 
 from api_gateway.schemas import (
     RunReport,
@@ -23,11 +28,6 @@ from api_gateway.security import (
     current_principal,
     principal_from_query_token,
 )
-from cwap_common.db import read_only_session
-from cwap_common.logbus import log_bus
-from cwap_common.models import Run, Workflow, WorkflowExecutionState
-from cwap_contracts import NodeType, WorkflowGraph
-from orchestrator.runner import start_run
 
 router = APIRouter(tags=["runs"])
 

@@ -24,14 +24,6 @@ import json
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from pydantic import BaseModel, ValidationError
-from sqlalchemy.orm import Session
-
-from cwap_common.authz import AuthorizationClient, LocalAuthorizationService
-from cwap_common.broker import Broker, get_broker
-from cwap_common.db import read_only_session, unit_of_work
-from cwap_common.models import DeadLetter
-from cwap_common.settings import get_settings
 from cwap_contracts import (
     AuthorizationFailure,
     ContractViolation,
@@ -40,6 +32,14 @@ from cwap_contracts import (
     ServiceName,
     WorkflowJobPayload,
 )
+from pydantic import BaseModel, ValidationError
+from sqlalchemy.orm import Session
+
+from cwap_common.authz import AuthorizationClient, LocalAuthorizationService
+from cwap_common.broker import Broker, get_broker
+from cwap_common.db import read_only_session, unit_of_work
+from cwap_common.models import DeadLetter
+from cwap_common.settings import get_settings
 
 TModel = TypeVar("TModel", bound=BaseModel)
 

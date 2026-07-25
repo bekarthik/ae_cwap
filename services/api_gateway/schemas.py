@@ -10,9 +10,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
-
 from cwap_contracts import DiagnosisResult, WorkflowGraph
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class Strict(BaseModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from cwap_contracts import GoalIntakeRequest, NodeType
 from nlp.service import diagnose, scaffold
+from orchestrator.variables import template_variables
 
 DENVER = "Plan my weekend trip to Denver"
 
@@ -93,6 +94,38 @@ class TestScaffolding:
         graph = scaffold_goal(DENVER).graph
         ordered = sorted(graph.nodes, key=lambda node: node.position.x)
         assert ordered[0].type is NodeType.INPUT
+
+    def test_scaffolded_templates_only_use_variables_that_are_actually_bound(self):
+        """Regression guard found by running the real UI.
+
+        A generated prompt that says `{{context}}` while no incoming edge binds
+        `context` fails on the first run with "undefined variable". Templates are
+        composed from the bindings, so this must hold for every scaffold.
+        """
+        goals = [
+            DENVER,
+            "Research our internal handbook and write a summary",
+            "Format the results as a table",
+            "Research the topic and if it mentions Denver write a summary, otherwise stop",
+            "Summarise our internal handbook",
+        ]
+        for goal in goals:
+            graph = scaffold_goal(goal, handles=["kb_1"]).graph
+            for node in graph.nodes:
+                bound = {
+                    name
+                    for edge in graph.incoming(node.id)
+                    for name in edge.bindings
+                }
+                for key in ("prompt_template", "template", "result_template", "query_template"):
+                    template = node.params.get(key)
+                    if not isinstance(template, str):
+                        continue
+                    missing = template_variables(template) - bound
+                    assert not missing, (
+                        f"goal={goal!r} node={node.id} {key} references {sorted(missing)} "
+                        f"but only {sorted(bound)} are bound"
+                    )
 
     def test_scaffolding_is_deterministic_apart_from_the_generated_id(self):
         first = scaffold_goal(DENVER).graph

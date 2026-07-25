@@ -25,10 +25,12 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 #: Extremely common words carry no retrieval signal and would otherwise dominate
 #: the cosine score of every chunk.
 STOPWORDS = frozenset(
-    """
-    a an and are as at be but by for from has have how i if in is it its of on or
-    that the this to was were what when where which who will with you your
-    """.split()
+    {
+        "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
+        "has", "have", "how", "i", "if", "in", "is", "it", "its", "of", "on",
+        "or", "that", "the", "this", "to", "was", "were", "what", "when",
+        "where", "which", "who", "will", "with", "you", "your",
+    }
 )
 
 
@@ -103,7 +105,7 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     """
     if len(left) != len(right):
         raise ValueError(f"dimension mismatch: {len(left)} vs {len(right)}")
-    score = sum(a * b for a, b in zip(left, right))
+    score = sum(a * b for a, b in zip(left, right, strict=True))
     return max(0.0, min(1.0, score))
 
 

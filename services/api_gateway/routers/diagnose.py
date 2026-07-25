@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from cwap_contracts import GoalIntakeRequest
 from fastapi import APIRouter, Depends
+from knowledge.service import list_handles
+from nlp.service import scaffold
 
 from api_gateway.schemas import DiagnoseRequest, DiagnoseResponse
 from api_gateway.security import Principal, current_principal
-from cwap_contracts import GoalIntakeRequest
-from knowledge.service import list_handles
-from nlp.service import scaffold
 
 router = APIRouter(prefix="/api/diagnose", tags=["diagnosis"])
 

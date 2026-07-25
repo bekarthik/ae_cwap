@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import pytest
-
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, User, WorkflowExecutionState
 from cwap_common.settings import get_settings, reset_settings_cache
 from cwap_contracts import (
     NodeType,
-    Position,
     WorkflowEdge,
     WorkflowGraph,
     WorkflowNode,
 )
-from orchestrator.executors import NodeExecutionError
 from orchestrator.runner import RUN_FAILED, RUN_SUCCEEDED, Worker, run_to_completion, start_run
 from orchestrator.variables import BindingError, RunContext, render_template, resolve
+
 from tests.conftest import make_branching_graph, make_linear_graph
 
 
@@ -289,3 +287,43 @@ class TestHttpNodeSafety:
         run = load_run(run_id)
         assert run.status == RUN_FAILED
         assert "allow-list" in run.error
+
+
+class TestScaffoldedWorkflowsRun:
+    """The strongest guard on Epic 1: a goal the user types must produce a graph
+    that actually executes, not merely one that validates.
+
+    Both bugs this class covers were found by driving the real UI — a draft can
+    be structurally valid and still fail on its first run.
+    """
+
+    @pytest.mark.parametrize(
+        "goal",
+        [
+            "Plan my weekend trip to Denver",
+            "Research our competitors and write a short comparison",
+            "Summarise our internal handbook",
+            "Research the topic and if it mentions Denver write a summary, otherwise stop",
+            "Format the findings as a table",
+            "zxqv wibble frobnicate",
+        ],
+    )
+    def test_a_scaffolded_workflow_runs_end_to_end(self, authorized_user, goal):
+        from cwap_contracts import GoalIntakeRequest, IngestRequest
+        from knowledge.service import ingest
+        from nlp.service import scaffold
+
+        corpus = ingest(
+            IngestRequest(
+                tenant_id=authorized_user.tenant_id,
+                title="Handbook",
+                content="Rail travel is preferred for journeys within the United Kingdom.",
+            )
+        )
+        graph = scaffold(
+            GoalIntakeRequest(goal=goal, knowledge_handles=[corpus.handle])
+        ).graph
+
+        run_id = run_to_completion(graph=graph, job_context=authorized_user, inputs={})
+        run = load_run(run_id)
+        assert run.status == RUN_SUCCEEDED, run.error

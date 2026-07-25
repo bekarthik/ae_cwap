@@ -9,7 +9,6 @@ from __future__ import annotations
 import uuid
 
 import pytest
-
 from cwap_common import db
 from cwap_common.broker import InMemoryBroker, set_broker
 from cwap_common.logbus import log_bus

@@ -1,0 +1,80 @@
+# Production-shaped local stack: PostgreSQL, Redis, the gateway, a separate
+# worker, and the canvas.
+#
+# The difference from `make dev` is entirely configuration. The same code runs
+# either way — swapping SQLite for Postgres and the in-memory broker for Redis
+# is two environment variables, which is the point of the transport and
+# persistence abstractions.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cwap
+      POSTGRES_PASSWORD: cwap
+      POSTGRES_DB: cwap
+    ports: ['5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U cwap']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway:
+    build: { context: ., dockerfile: deploy/Dockerfile.api }
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      CWAP_DATABASE_URL: postgresql+psycopg://cwap:cwap@postgres:5432/cwap
+      CWAP_BROKER: redis
+      CWAP_REDIS_URL: redis://redis:6379/0
+      # The worker is its own service here, so the gateway must not also run one.
+      CWAP_INLINE_WORKER: 'false'
+      CWAP_CORS_ORIGINS: http://localhost:3000
+      CWAP_JWT_SECRET: ${CWAP_JWT_SECRET:?set CWAP_JWT_SECRET before starting}
+      CWAP_LLM_PROVIDER: ${CWAP_LLM_PROVIDER:-stub}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports: ['8000:8000']
+    command: uvicorn api_gateway.app:app --host 0.0.0.0 --port 8000
+
+  worker:
+    build: { context: ., dockerfile: deploy/Dockerfile.api }
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      CWAP_DATABASE_URL: postgresql+psycopg://cwap:cwap@postgres:5432/cwap
+      CWAP_BROKER: redis
+      CWAP_REDIS_URL: redis://redis:6379/0
+      CWAP_JWT_SECRET: ${CWAP_JWT_SECRET:?set CWAP_JWT_SECRET before starting}
+      CWAP_LLM_PROVIDER: ${CWAP_LLM_PROVIDER:-stub}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Hosts an HTTP node is permitted to reach. Empty means no outbound calls.
+      CWAP_HTTP_ALLOWLIST: ${CWAP_HTTP_ALLOWLIST:-}
+    command: >
+      python -c "from cwap_common.db import init_db;
+      from orchestrator.runner import Worker;
+      init_db(); Worker().run_forever()"
+    deploy:
+      replicas: 2 # proves the point: state is idempotent, so workers are fungible
+
+  web:
+    build: { context: ./web, dockerfile: ../deploy/Dockerfile.web }
+    depends_on: [gateway]
+    environment:
+      NEXT_PUBLIC_API_BASE: http://localhost:8000
+    ports: ['3000:3000']
+
+volumes:
+  pgdata:

@@ -25,6 +25,10 @@ class Skill:
     rationale: str
     #: Seed params for the scaffolded node, shown to the user for review.
     default_params: dict[str, Any] = field(default_factory=dict)
+    #: Opening line of a generated prompt. The rest of the prompt is composed
+    #: from the variables the incoming edge actually binds, so a scaffolded
+    #: template can never reference something that will not be there.
+    instruction: str = ""
     #: Set when the skill cannot run until the user supplies something we
     #: cannot invent — surfaced as a `gap` rather than silently scaffolded.
     requires: str | None = None
@@ -42,8 +46,8 @@ CATALOGUE: tuple[Skill, ...] = (
         rationale="The goal asks for information to be gathered and condensed.",
         default_params={
             "system": "You are a meticulous research assistant. Cite what you rely on.",
-            "prompt_template": "Research the following and summarise the key findings:\n\n{{goal}}",
         },
+        instruction="Research the following and summarise the key findings.",
     ),
     Skill(
         key="plan",
@@ -56,8 +60,8 @@ CATALOGUE: tuple[Skill, ...] = (
         rationale="The goal asks for an ordered plan rather than a single answer.",
         default_params={
             "system": "You are a planner. Produce concrete, ordered, actionable steps.",
-            "prompt_template": "Produce a step-by-step plan for:\n\n{{goal}}\n\n{{context}}",
         },
+        instruction="Produce a concrete, ordered, step-by-step plan.",
     ),
     Skill(
         key="ground_in_documents",
@@ -68,7 +72,7 @@ CATALOGUE: tuple[Skill, ...] = (
             "policy", "handbook", "corpus", "uploaded", "private data", "our data",
         ),
         rationale="The goal refers to private material the model has not been trained on.",
-        default_params={"top_k": 4, "query_template": "{{goal}}"},
+        default_params={"top_k": 4, "query_template": "{{query}}"},
         requires="a Knowledge Context — upload documents before running this step",
     ),
     Skill(
@@ -82,8 +86,8 @@ CATALOGUE: tuple[Skill, ...] = (
         rationale="The goal asks for a written artefact to be produced.",
         default_params={
             "system": "You are an editor. Write clearly and concisely; no filler.",
-            "prompt_template": "Write the requested piece.\n\nBrief:\n{{goal}}\n\n{{context}}",
         },
+        instruction="Write the requested piece.",
     ),
     Skill(
         key="classify",
@@ -130,7 +134,7 @@ def match(goal: str) -> list[tuple[Skill, int]]:
     """
     haystack = f" {goal.lower()} "
     scored: list[tuple[Skill, int]] = []
-    for index, skill in enumerate(CATALOGUE):
+    for skill in CATALOGUE:
         hits = sum(1 for keyword in skill.keywords if keyword in haystack)
         if hits:
             scored.append((skill, hits))

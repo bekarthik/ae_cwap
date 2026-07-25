@@ -28,6 +28,7 @@ from cwap_contracts import (
     WorkflowGraph,
     WorkflowNode,
 )
+
 from nlp import skills as catalogue
 from nlp.skills import Skill
 
@@ -164,12 +165,16 @@ def build_graph(diagnosis: DiagnosisResult, request: GoalIntakeRequest) -> Workf
     for index, requirement in enumerate(content_steps, start=1):
         skill = catalogue.by_key(requirement.skill)
         node_id = f"step_{index}"
+        bindings = _content_bindings(previous)
         nodes.append(
             WorkflowNode(
                 id=node_id,
                 type=NodeType.LLM,
                 label=skill.label,
-                params=_llm_params(skill, index),
+                # The prompt is composed from the bindings this node will
+                # actually receive, so it can never reference a variable the
+                # incoming edge does not supply.
+                params={**skill.default_params, "prompt_template": _prompt_for(skill, bindings)},
                 position=place(),
             )
         )
@@ -178,7 +183,7 @@ def build_graph(diagnosis: DiagnosisResult, request: GoalIntakeRequest) -> Workf
                 id=f"e_{previous}_{node_id}",
                 source=previous,
                 target=node_id,
-                bindings=_content_bindings(previous),
+                bindings=bindings,
             )
         )
         previous = node_id
@@ -270,14 +275,26 @@ def _confidence(matches: list[tuple[Skill, int]]) -> float:
     return round(min(0.95, 0.4 + 0.1 * distinct + 0.02 * total_hits), 2)
 
 
-def _llm_params(skill: Skill, index: int) -> dict[str, object]:
-    params = dict(skill.default_params)
-    if index > 1:
-        params["prompt_template"] = (
-            "Build on the previous step's result.\n\n"
-            "Previous result:\n{{previous}}\n\nOriginal goal:\n{{goal}}"
-        )
-    return params
+#: How each binding name is introduced in a generated prompt. Ordered, so the
+#: goal always leads and prior work always trails.
+_PROMPT_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("goal", "Goal:\n{{goal}}"),
+    ("context", "Relevant extracts from the user's own documents:\n{{context}}"),
+    ("previous", "The previous step produced:\n{{previous}}"),
+)
+
+
+def _prompt_for(skill: Skill, bindings: dict[str, str]) -> str:
+    """Compose a prompt from exactly the variables that will be bound.
+
+    Generating the template from the bindings — rather than writing a fixed
+    template and hoping the wiring matches — is what makes it impossible for the
+    scaffolder to emit a node that fails on its first run with "undefined
+    variable".
+    """
+    parts = [skill.instruction or "Complete the task described below."]
+    parts.extend(body for name, body in _PROMPT_SECTIONS if name in bindings)
+    return "\n\n".join(parts)
 
 
 def _content_bindings(previous: str) -> dict[str, str]:

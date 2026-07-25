@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.idempotency import (
     CLAIM_SUCCEEDED,
@@ -134,11 +133,10 @@ class TestIdempotencyGate:
 class TestTransactionalBoundary:
     def test_a_failure_mid_step_rolls_back_every_write(self):
         """§3.C — no partial state, no orphaned log rows."""
-        with pytest.raises(RuntimeError, match="boom"):
-            with unit_of_work() as session:
-                commit_step_output(session, step_output())
-                append_log(session, LogEvent(run_id="run_1", seq=1, event="step.started"))
-                raise RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"), unit_of_work() as session:
+            commit_step_output(session, step_output())
+            append_log(session, LogEvent(run_id="run_1", seq=1, event="step.started"))
+            raise RuntimeError("boom")
 
         with read_only_session() as session:
             assert session.query(WorkflowExecutionState).count() == 0

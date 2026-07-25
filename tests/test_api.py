@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from fastapi.testclient import TestClient
-
 from api_gateway.app import create_app
-from cwap_common.db import unit_of_work
-from cwap_common.models import User
+from fastapi.testclient import TestClient
 from orchestrator.runner import Worker
+
 from tests.conftest import make_linear_graph
 
 PASSWORD = "a-sufficiently-long-password"
@@ -332,9 +330,11 @@ class TestLogStream:
             "/api/workflows/wf_ws2/runs", json={"inputs": {"goal": "x"}}, headers=auth
         ).json()["run_id"]
 
-        with pytest.raises(Exception):
-            with client.websocket_connect(f"/api/runs/{run_id}/logs") as socket:
-                socket.receive_json()
+        with (
+            pytest.raises(Exception),
+            client.websocket_connect(f"/api/runs/{run_id}/logs") as socket,
+        ):
+            socket.receive_json()
 
 
 class TestAdmin:
