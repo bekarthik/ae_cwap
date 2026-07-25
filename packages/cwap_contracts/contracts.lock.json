@@ -1,0 +1,16 @@
+{
+  "DiagnosisResult@v1": "014bdc0fa2771af09df8cc521d94585f2b5865ccbd342969984a6a5a1ac2ee1b",
+  "GoalIntakeRequest@v1": "66be3ed42a8c8bbb2aea9253796b1d492290ad0bb77e0cd8886b5279fda9e756",
+  "IngestRequest@v1": "4b33ad956b823890da6f71430fc5a304b9808b5ab964d143fb1006a20c8a5312",
+  "JobContext@v1": "924022832fa30e819425e58ecbda97d0c9bd7052465a24e924f9c4d78d924a1b",
+  "KnowledgeHandle@v1": "5587f64fb9b997158fe66dca4f6148b0755b0fb0e88f0eabe8c47f19b5c150e3",
+  "LogEvent@v1": "3019afe8b15a50dc5128f87b241c335ec427aa2047830850194511716d5fa06a",
+  "NextStepDefinition@v1": "98757259ddeb3273fac7433b26536972c92f474bf69cf30f323debcbc9bc9aa5",
+  "PermissionRequirement@v1": "6ba99efefedb2cbaab1ab8fb1a6b2d5dc2517f40a2f777aa1aa84e21dda1547d",
+  "RetrievalRequest@v1": "653d0166d4bd52b95dfbdb250a73b66014cb649d8eaa535168084e4447bb7cf8",
+  "RetrievalResult@v1": "b5e8bff8490087c13188db21d4625815538e0e5d4d7850bdb3f216ce9d55e6a0",
+  "ScaffoldResponse@v1": "22a554c785d9abe77e12ac8615cb443a73107bcecd0de8554c3606b55d21f123",
+  "StepOutputContext@v1": "93146fe4a50980c26cafe23f8d4cb8d6f357a1dd1214ed375f2968f61c3d098b",
+  "WorkflowGraph@v1": "0ef96693e5923d191aee06b81ef4d9b0f37d76c197bff2270f3c87fbd7ea55c8",
+  "WorkflowJobPayload@v1": "142a6ac1efb0990a6c5daa9af8386319b3f7b9ec94ab47bca6514c058b221b66"
+}

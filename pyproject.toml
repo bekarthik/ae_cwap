@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cwap"
+version = "0.1.0"
+description = "AI Cognitive Workflow Platform - visual, no-code multi-agent workflow builder"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.9",
+    "email-validator>=2.0",
+    "sqlalchemy>=2.0",
+    "pyjwt>=2.8",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "websockets>=12",
+]
+
+[project.optional-dependencies]
+# The platform runs end to end without these. Each unlocks a production path.
+queue = ["celery>=5.4", "redis>=5.0"]           # Redis/Celery instead of the in-memory broker
+llm = ["anthropic>=0.116"]                       # real model calls instead of the stub provider
+postgres = ["psycopg[binary]>=3.1"]              # PostgreSQL instead of SQLite
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["packages", "services"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
