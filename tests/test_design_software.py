@@ -298,19 +298,26 @@ class TestAnUnrecognisedGoalIsPlannedByTheModel:
         response = designed("Xylophone quarterly frobnication")
         assert any("proposed" in note for note in response.notes)
 
-    def test_a_confident_classification_is_not_handed_to_the_model(self):
-        """The deterministic path stays in charge where a blueprint genuinely
-        applies, so those designs remain repeatable."""
-        provider = ScriptedProvider('{"agents": [{"name": "Hijacked", "role": "r",'
-                                    ' "objective": "o", "skills": [], "rationale": "x"}]}')
+    def test_a_confident_classification_is_a_hint_not_a_cage(self):
+        """A blueprint that fits is worth telling the model about — and it is
+        still free to decide otherwise. Fixing the structure in advance is what
+        produced three writers for a software organisation."""
+        provider = ScriptedProvider('{"agents": [{"name": "Different", "role": "r",'
+                                    ' "objective": "Do {{goal}}", "skills": [],'
+                                    ' "rationale": "x"}]}')
         reset_provider_cache(provider)
         response = designed("Research our competitors and write a short comparison")
 
-        assert [agent.name for agent in response.agents] == [
-            "Researcher",
-            "Writer",
-            "Reviewer",
-        ]
+        assert [agent.name for agent in response.agents] == ["Different"]
+        # The blueprint was offered as context rather than imposed.
+        assert "Researcher" in provider.prompts[0]
+
+    def test_the_prompt_does_not_fix_the_agent_count(self):
+        """The reported string: "exactly the same number of agents"."""
+        from design.service import PLAN_SYSTEM
+
+        assert "same number of agents" not in PLAN_SYSTEM
+        assert "HOW MANY" in PLAN_SYSTEM
 
     @pytest.mark.parametrize(
         "text",
@@ -494,3 +501,78 @@ class TestConnectorsFollowLeastPrivilege:
 
     def test_a_reader_can_still_read(self, code_host):
         assert "repo_read_file" in self.skills_of("Reviewer")
+
+
+class TestAModelDesignedTeamReachesConnectedSystems:
+    """A team the platform did not write templates for still has to be able to
+    do the job it describes. What it needs is read from what the model said
+    about each agent, because there is no template to consult."""
+
+    @pytest.fixture(autouse=True)
+    def _drop_sessions(self):
+        yield
+        reset_client(None)
+
+    @pytest.fixture
+    def code_host(self, monkeypatch):
+        monkeypatch.setenv("CWAP_MCP_ALLOWED_COMMANDS", sys.executable)
+        assert mcp_registry.connect(
+            TENANT,
+            name="repo",
+            config=MCPServerConfig(
+                transport=MCPTransport.STDIO, command=sys.executable, args=[FIXTURE]
+            ),
+        ).ok
+
+    def plan(self, *agents: str):
+        reset_provider_cache(ScriptedProvider('{"agents": [' + ",".join(agents) + "]}"))
+        return designed("Some entirely unanticipated kind of work")
+
+    def skills_of(self, response, name: str):
+        from skills import registry as skill_registry
+
+        stored = {agent.name: agent for agent in stored_agents(response)}
+        return {
+            skill.name: skill
+            for skill in skill_registry.get_many(TENANT, stored[name].skill_ids)
+        }
+
+    def test_an_agent_that_says_it_opens_a_pull_request_gets_the_tool(self, code_host):
+        response = self.plan(
+            '{"name": "Lander", "role": "an engineer who opens a pull request for '
+            'finished work", "objective": "Open a pull request for {{goal}}",'
+            ' "skills": ["draft_text"], "rationale": "x"}'
+        )
+        assert "repo_create_pull_request" in self.skills_of(response, "Lander")
+
+    def test_an_agent_that_only_reads_is_offered_only_read_tools(self, code_host):
+        response = self.plan(
+            '{"name": "Inspector", "role": "a reviewer who reads the source and '
+            'reports problems", "objective": "Review {{goal}}", "skills": ["critique"],'
+            ' "rationale": "x"}'
+        )
+        for skill in self.skills_of(response, "Inspector").values():
+            if skill.origin.value == "mcp":
+                assert skill.definition.get("read_only") is True, skill.name
+
+    def test_an_agent_with_no_external_work_gets_no_tools(self, code_host):
+        """A tool list padded with irrelevant capabilities makes a model worse at
+        choosing from it."""
+        response = self.plan(
+            '{"name": "Thinker", "role": "an analyst who reasons about tradeoffs",'
+            ' "objective": "Weigh the options in {{goal}}", "skills": ["summarise"],'
+            ' "rationale": "x"}'
+        )
+        assert not any(
+            name.startswith("repo_") for name in self.skills_of(response, "Thinker")
+        )
+
+
+class TestTheCeilingIsAReviewBoundNotAStructure:
+    def test_a_full_delivery_pipeline_fits(self):
+        assert design_service.MAX_AGENTS >= 6
+
+    def test_the_model_is_told_where_it_stops(self):
+        from design.service import PLAN_SYSTEM
+
+        assert f"1 and {design_service.MAX_AGENTS} agents" in PLAN_SYSTEM

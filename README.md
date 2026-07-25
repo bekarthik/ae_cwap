@@ -157,7 +157,7 @@ services/
   orchestrator/       State machine, executors, worker, Celery entry point
   llm_proxy/          The only module that talks to a model, any vendor
 web/                  Next.js canvas (React Flow)
-tests/                583 tests, no external services required
+tests/                592 tests, no external services required
                       (and the same suite runs against PostgreSQL)
 deploy/               Container images
 docs/                 Architecture, contracts, model backends, epics

@@ -384,28 +384,97 @@ class TestAnswersShapeTheDesign:
             assert "two pages" in stored.instructions
 
 
-class TestModelRefinement:
-    def test_a_model_may_reword_the_design(self):
+class TestModelPlanning:
+    """The model decides the structure, and the blueprint is the fallback.
+
+    It used to be the other way round: the blueprint fixed the team and the model
+    was told to return "exactly the same number of agents". That is how a request
+    for a whole software organisation came back as three writers — the count was
+    decided before anything read the goal.
+    """
+
+    def test_the_model_designs_the_team(self):
         reset_provider_cache(
             RewordingProvider(
                 '{"agents": [{"name": "Solar Researcher", "role": "an energy analyst",'
-                ' "objective": "Gather the tariff data."},'
-                ' {"name": "Writer", "role": "an editor", "objective": "Write it up."},'
-                ' {"name": "Reviewer", "role": "a checker", "objective": "Check it."}]}'
+                ' "objective": "Gather the tariff data for {{goal}}.", "skills": ["summarise"],'
+                ' "rationale": "Someone has to read the tariffs."}]}'
             )
         )
         response = designed("Research and write a briefing on solar tariffs")
-        assert response.agents[0].name == "Solar Researcher"
+        assert [agent.name for agent in response.agents] == ["Solar Researcher"]
 
-    def test_a_model_may_not_change_the_structure(self):
-        """It returned two agents where the blueprint has three, so the whole
-        refinement is discarded rather than partially applied."""
+    def test_it_may_use_a_different_number_of_agents_than_the_blueprint(self):
+        """The property the old prompt forbade outright."""
         reset_provider_cache(
-            RewordingProvider('{"agents": [{"name": "Only", "role": "r", "objective": "o"}]}')
+            RewordingProvider(
+                '{"agents": ['
+                '{"name": "One", "role": "r", "objective": "Do {{goal}}", "skills": [],'
+                ' "rationale": "x"},'
+                '{"name": "Two", "role": "r", "objective": "Then {{previous}}", "skills": [],'
+                ' "rationale": "x"},'
+                '{"name": "Three", "role": "r", "objective": "Then {{previous}}", "skills": [],'
+                ' "rationale": "x"},'
+                '{"name": "Four", "role": "r", "objective": "Then {{previous}}", "skills": [],'
+                ' "rationale": "x"},'
+                '{"name": "Five", "role": "r", "objective": "Then {{previous}}", "skills": [],'
+                ' "rationale": "x"}]}'
+            )
         )
-        response = designed("Research and write a briefing on solar tariffs")
-        assert len(response.agents) == 3
-        assert response.agents[0].name == "Researcher"
+        # The blueprint for this goal has three agents.
+        assert len(designed("Research and write a briefing on solar tariffs").agents) == 5
+
+    def test_a_single_agent_is_a_legitimate_design(self):
+        """Padding a simple goal with hand-off agents is its own failure."""
+        reset_provider_cache(
+            RewordingProvider(
+                '{"agents": [{"name": "Answerer", "role": "r",'
+                ' "objective": "Answer {{goal}}", "skills": [], "rationale": "x"}]}'
+            )
+        )
+        assert len(designed("What is our refund policy?").agents) == 1
+
+    def test_the_model_sets_each_agents_iteration_budget(self):
+        """Also structural: an agent that must produce, check and correct needs
+        more attempts than one that summarises, and only the plan knows which
+        this is."""
+        from agents import registry as agent_registry
+        from cwap_contracts.v3 import NodeType
+
+        reset_provider_cache(
+            RewordingProvider(
+                '{"agents": ['
+                '{"name": "Quick", "role": "r", "objective": "Do {{goal}}", "skills": [],'
+                ' "max_iterations": 3, "rationale": "x"},'
+                '{"name": "Thorough", "role": "r", "objective": "Then {{previous}}",'
+                ' "skills": [], "max_iterations": 15, "rationale": "x"}]}'
+            )
+        )
+        graph = designed("Research and write a briefing on solar tariffs").graph
+        stored = {
+            node.label: agent_registry.get(TENANT, node.agent_id)
+            for node in graph.nodes
+            if node.type is NodeType.AGENT
+        }
+
+        assert stored["Quick"].max_iterations == 3
+        assert stored["Thorough"].max_iterations == 15
+
+    def test_an_absurd_budget_is_clamped(self):
+        """Structural decisions are the model's; somebody's bill is not."""
+        from agents import registry as agent_registry
+        from cwap_contracts.v3 import NodeType
+
+        reset_provider_cache(
+            RewordingProvider(
+                '{"agents": [{"name": "Endless", "role": "r", "objective": "Do {{goal}}",'
+                ' "skills": [], "max_iterations": 9999, "rationale": "x"}]}'
+            )
+        )
+        graph = designed("Research and write a briefing on solar tariffs").graph
+        node = next(n for n in graph.nodes if n.type is NodeType.AGENT)
+
+        assert agent_registry.get(TENANT, node.agent_id).max_iterations <= 20
 
     def test_unusable_model_output_leaves_the_design_intact(self):
         reset_provider_cache(RewordingProvider("I'm not able to help with that."))

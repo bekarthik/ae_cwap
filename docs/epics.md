@@ -57,11 +57,12 @@ canvas.
 
 Four properties beyond the brief, each a deliberate choice:
 
-- **Deterministic in structure, model-improved in wording.** The model rewords
-  each role and objective against the actual goal; it does not decide how many
-  agents there are or what they hand to each other. So the same goal and answers
-  always give the same shape — reviewable — and the whole flow works on a small
-  local model or the offline stub.
+- **The goal decides the structure.** How many agents, what each does, and how
+  much each may iterate are decided from the request, not fixed in advance. A
+  blueprint that matches is offered as a hint the model may ignore, and is the
+  fallback when there is no usable model — which is what keeps the offline stub
+  and small local models working. The cost is repeatability, and the design
+  review says when a design was planned rather than taken from a blueprint.
 - **Honest about gaps.** A capability that would need to reach outside the
   platform is reported as a gap with what a human must supply, rather than
   invented. A goal mentioning documents that have not been uploaded gets agents

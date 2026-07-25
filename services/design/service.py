@@ -50,10 +50,14 @@ from design import blueprints
 #: More than this and the conversation stops feeling like help.
 MAX_QUESTIONS = 4
 
-#: More than this and the user is reviewing a system, not a workflow. Six is
-#: what a full delivery pipeline needs — specify, break down, build, review,
-#: land — and stopping at four would have made that shape unrepresentable.
-MAX_AGENTS = 6
+#: A bound on review effort and cost, not an opinion about structure.
+#:
+#: Every agent is a stored object with its own memory and its own chain of model
+#: calls, so a runaway design is both expensive and unreviewable. Eight leaves
+#: room for a full delivery pipeline — specify, break down, build, test, review,
+#: land — plus a couple the goal turns out to need. How many are actually used is
+#: the model's decision from the goal; this only says where it stops.
+MAX_AGENTS = 8
 
 _X_STEP = 300
 _Y_BASE = 140
@@ -194,23 +198,29 @@ def _build(
     skill_registry.ensure_builtins(tenant_id)
     connectors = _connector_skills(tenant_id)
 
-    proposed = None
-    if not confident:
-        # No blueprint fits this goal well. Forcing the nearest one produces a
-        # confident, wrong workflow — a brief describing a software organisation
-        # became "research, then write it up" on the strength of one word. So the
-        # model is asked to propose a team instead, validated against the same
-        # contracts, and the blueprint remains the fallback.
-        proposed = _propose_agents(request.goal, answers, connectors)
-
-    planned = proposed or _plan_agents(request.goal, intent, answers, use_documents)
-    if proposed is None:
-        planned = _refine_with_model(request.goal, planned, answers)
+    # The model decides the structure. How many agents a goal needs, and what
+    # each hands to the next, is a property of the goal — it cannot be settled
+    # before reading it. The blueprint that classification found is passed in as
+    # a *hint*, because a shape that usually works for this kind of request is
+    # worth knowing, and it stays the fallback for when there is no usable model.
+    plan = _plan_with_model(
+        request.goal,
+        answers,
+        connectors,
+        hint=intent if confident else None,
+        use_documents=use_documents,
+    )
+    proposed = plan is not None
+    if plan is None:
+        planned = _plan_agents(request.goal, intent, answers, use_documents)
+        budgets = {t.name: t.max_iterations for t in intent.agents}
+    else:
+        planned, budgets = plan
 
     resolved, gaps = _resolve_skills(
         tenant_id, planned, request.goal, request.knowledge_handles if use_documents else []
     )
-    _attach_connectors(intent, planned, resolved, connectors, gaps, proposed is not None)
+    _attach_connectors(intent, planned, resolved, connectors, gaps, proposed)
 
     if answers.get("external", "").lower().startswith("yes"):
         gaps.append(
@@ -226,7 +236,7 @@ def _build(
         )
 
     _note_write_scope(planned, resolved, tenant_id, gaps)
-    graph = _build_graph(request.goal, planned, resolved, tenant_id, answers, intent)
+    graph = _build_graph(request.goal, planned, resolved, tenant_id, answers, budgets)
 
     return DesignResponse(
         stage=DesignStage.DESIGNED,
@@ -234,7 +244,7 @@ def _build(
         agents=planned,
         skill_gaps=gaps,
         graph=graph,
-        notes=_notes(planned, gaps, use_documents, proposed is not None),
+        notes=_notes(planned, gaps, use_documents, proposed),
     )
 
 
@@ -246,9 +256,10 @@ def _plan_agents(
 ) -> list[PlannedAgent]:
     """Decompose the goal into roles.
 
-    Deterministic, from the intent's blueprint. The model refines wording in
-    `_refine_with_model`; it does not get to invent the structure, because a
-    structure that changes between identical requests cannot be reviewed.
+    The fallback, used when there is no usable model or its plan did not
+    validate. Deterministic, so a deployment running the offline stub — or a
+    small local model that cannot return clean JSON — still gets a coherent
+    workflow rather than an error.
     """
     audience = answers.get("audience") or "the requester"
     deliverable = answers.get("deliverable") or intent.default_deliverable
@@ -276,107 +287,72 @@ def _plan_agents(
     return planned
 
 
-REFINE_SYSTEM = """\
-You improve the wording of a workflow design. You do NOT change its structure.
+PLAN_SYSTEM = """\
+You design a team of AI agents that will run one after another to accomplish a
+goal. You decide the structure.
 
-Return one JSON object: {"agents": [{"name": "...", "role": "...", "objective": "..."}]}
-with exactly the same number of agents, in the same order. Keep each name short.
-Make each role and objective specific to the user's actual goal. Return only JSON.
-"""
-
-
-def _refine_with_model(
-    goal: str, planned: list[PlannedAgent], answers: dict[str, str]
-) -> list[PlannedAgent]:
-    """Let the model sharpen the wording. Structure is fixed.
-
-    Any failure — no model, bad JSON, wrong agent count — keeps the deterministic
-    design, so this can only improve the result, never break it.
-    """
-    if not planned:
-        return planned
-
-    sketch = [{"name": a.name, "role": a.role, "objective": a.objective} for a in planned]
-    prompt = (
-        f"Goal:\n{goal}\n\nAnswers:\n{json.dumps(answers, indent=2)}\n\n"
-        f"Design to reword:\n{json.dumps(sketch, indent=2)}"
-    )
-
-    try:
-        completion = get_provider().complete(
-            prompt,
-            system=REFINE_SYSTEM,
-            options=GenerationOptions(max_tokens=1500, temperature=0.3, effort="medium"),
-        )
-        payload = _extract_json(completion.text)
-        refined = (payload or {}).get("agents")
-        if not isinstance(refined, list) or len(refined) != len(planned):
-            return planned
-
-        return [
-            original.model_copy(
-                update={
-                    "name": str(item.get("name") or original.name)[:120],
-                    "role": str(item.get("role") or original.role)[:500],
-                    "objective": str(item.get("objective") or original.objective)[:2000],
-                }
-            )
-            for original, item in zip(planned, refined, strict=True)
-        ]
-    except (LLMProxyError, ValueError, TypeError):
-        return planned
-
-
-PROPOSE_SYSTEM = """\
-You design a team of AI agents to accomplish a goal. Return ONE JSON object:
+Return ONE JSON object:
 
 {"agents": [{"name": "...", "role": "...", "objective": "...",
-             "skills": ["..."], "rationale": "..."}]}
+             "skills": ["..."], "max_iterations": 6, "rationale": "..."}]}
 
-Rules:
-- Between 1 and {max_agents} agents, in the order they should run.
-- Each agent does ONE job and hands its result to the next. There is no looping
-  between agents; an agent that must retry does so within its own turn.
-- "role": who this agent is, in one sentence, second person is not needed.
+Deciding the structure means deciding:
+- HOW MANY agents. Use as many as the work genuinely needs and no more. A simple
+  question needs one. A delivery pipeline may need five or six. Do not pad the
+  team with agents that only pass work along.
+- WHAT each one does, and what it hands to the next. Each agent runs once, in
+  order, and receives the previous agent's output.
+- HOW MUCH each may iterate. `max_iterations` is how many times an agent may use
+  a skill and reconsider before it must answer. There is no loop *between*
+  agents, so an agent that must produce, check and correct its own work needs a
+  larger budget — 10 or more. One that summarises once needs 3 or 4.
+
+Field rules:
+- "name": one or two words, unique within the team.
+- "role": who this agent is and how it works, in one sentence.
 - "objective": what THIS agent must achieve. Use {{goal}} for the user's request
   and {{previous}} for the previous agent's output. The first agent has no
   {{previous}}.
-- "skills": short lower_snake_case capability names. Ask for what the agent
-  needs; anything that does not exist will be built.
+- "skills": capability names this agent needs, lower_snake_case. Prefer the ones
+  listed as available. Anything else you name will be built for it.
 - "rationale": why this agent exists, for a human reviewing the design.
-- Return only the JSON object.
+
+Between 1 and {max_agents} agents. Return only the JSON object.
 """.replace("{max_agents}", str(MAX_AGENTS))
 
 
-def _propose_agents(
-    goal: str, answers: dict[str, str], connectors: list
-) -> list[PlannedAgent] | None:
-    """Ask the model to design a team when no blueprint fits.
+def _plan_with_model(
+    goal: str,
+    answers: dict[str, str],
+    connectors: list,
+    *,
+    hint: blueprints.Intent | None,
+    use_documents: bool,
+) -> tuple[list[PlannedAgent], Budgets] | None:
+    """Ask the model to design the team for this goal.
 
-    This is where the platform stops being limited to the shapes somebody
-    anticipated. It is used only on a weak classification, because a design that
-    varies between identical requests is harder to review — so the deterministic
-    path stays in charge wherever it genuinely applies, and this covers the rest.
+    The primary path. The structure of a workflow — how many agents, what each
+    does, how much each may iterate — is a property of the goal, and cannot be
+    decided before reading it. Fixing it in advance and asking the model only to
+    reword produced exactly the failure that made this change necessary: a
+    request for a software organisation staffed as three writers, because the
+    blueprint said three.
 
-    Returns None on any failure, and the caller falls back to a blueprint. A goal
-    the model cannot plan for still produces a working workflow.
+    A blueprint the classifier is confident about is offered as a hint, not a
+    cage: a shape that usually works for this kind of request is worth knowing,
+    and the model may use more agents, fewer, or entirely different ones.
+
+    Returns None when there is no usable model or the proposal cannot be
+    validated, and the caller falls back to the blueprint — so the platform still
+    designs something sensible with no model at all.
     """
-    available = ", ".join(sorted({skill.name for skill in connectors})[:24])
-    prompt = (
-        f"Goal:\n{goal}\n\n"
-        f"What the user said about it:\n{json.dumps(answers, indent=2)}\n\n"
-        + (
-            f"Tools already connected to this workspace, which agents may use:\n{available}\n"
-            if available
-            else "No external systems are connected to this workspace.\n"
-        )
-    )
+    prompt = _plan_prompt(goal, answers, connectors, hint=hint, use_documents=use_documents)
 
     try:
         completion = get_provider().complete(
             prompt,
-            system=PROPOSE_SYSTEM,
-            options=GenerationOptions(max_tokens=2500, temperature=0.2, effort="high"),
+            system=PLAN_SYSTEM,
+            options=GenerationOptions(max_tokens=3000, temperature=0.2, effort="high"),
         )
     except LLMProxyError:
         return None
@@ -386,27 +362,86 @@ def _propose_agents(
     if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_AGENTS:
         return None
 
-    proposed: list[PlannedAgent] = []
+    planned: list[PlannedAgent] = []
+    budgets: Budgets = {}
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             return None
         agent = _validated_agent(item, index)
         if agent is None:
             return None
-        proposed.append(agent)
+        planned.append(agent)
+        budgets[agent.name] = _budget(item.get("max_iterations"))
 
-    # Two agents with the same name would collide when they are stored and would
-    # make the canvas ambiguous.
-    if len({agent.name for agent in proposed}) != len(proposed):
+    # Two agents with the same name would collide when stored and would make the
+    # canvas ambiguous.
+    if len({agent.name for agent in planned}) != len(planned):
         return None
-    return proposed
+    return planned, budgets
+
+
+def _plan_prompt(
+    goal: str,
+    answers: dict[str, str],
+    connectors: list,
+    *,
+    hint: blueprints.Intent | None,
+    use_documents: bool,
+) -> str:
+    """Everything the model needs to decide a structure.
+
+    Notably including what capabilities already exist. A model that knows the
+    workspace has `repo_create_pull_request` designs an agent that opens pull
+    requests; one that does not describes opening one.
+    """
+    parts = [f"Goal:\n{goal}\n"]
+
+    stated = {key: value for key, value in answers.items() if value}
+    if stated:
+        parts.append(f"What the user said about it:\n{json.dumps(stated, indent=2)}\n")
+
+    builtin = ", ".join(skill.name for skill in skill_registry.BUILTIN_SKILLS)
+    parts.append(f"Capabilities always available:\n{builtin}\n")
+
+    if connectors:
+        tools = ", ".join(sorted({skill.name for skill in connectors})[:30])
+        parts.append(
+            "Tools connected to this workspace, which agents can be given:\n"
+            f"{tools}\n"
+        )
+    else:
+        parts.append("No external systems are connected to this workspace.\n")
+
+    if use_documents:
+        parts.append(
+            "The user has uploaded documents. An agent that should consult them "
+            "can ask for the skill `search_my_documents`.\n"
+        )
+
+    if hint is not None:
+        shape = " → ".join(template.name for template in hint.agents)
+        parts.append(
+            f"This reads like: {hint.label.lower()}. A shape that often works for "
+            f"that is {shape}. Use it only if it genuinely fits — use more agents, "
+            "fewer, or different ones as this goal actually requires.\n"
+        )
+
+    return "\n".join(parts)
+
+
+#: Iteration budgets the model asked for, keyed by agent name.
+#:
+#: Carried beside the plan rather than on `PlannedAgent`, which is a published
+#: contract: the budget is how the graph is built, not part of the design a
+#: caller is promised, and the stored `AgentDefinition` records the real value.
+Budgets = dict[str, int]
 
 
 def _validated_agent(item: dict, index: int) -> PlannedAgent | None:
     """One proposed agent, or None if it is not usable.
 
-    Rejecting the whole proposal on one bad agent is deliberate: half a design is
-    not a design, and the blueprint fallback produces something coherent.
+    Rejecting the whole plan on one bad agent is deliberate: half a design is not
+    a design, and the blueprint fallback produces something coherent.
     """
     name = str(item.get("name") or "").strip()[:60]
     role = str(item.get("role") or "").strip()[:500]
@@ -419,7 +454,7 @@ def _validated_agent(item: dict, index: int) -> PlannedAgent | None:
         _slug(str(skill))
         for skill in (raw_skills if isinstance(raw_skills, list) else [])
         if str(skill).strip()
-    ][:6]
+    ][:8]
 
     # An objective that references nothing it will be given renders as literal
     # braces in the prompt. The first agent gets the goal; the rest also get
@@ -436,6 +471,20 @@ def _validated_agent(item: dict, index: int) -> PlannedAgent | None:
         skills=skills or ["summarise"],
         rationale=str(item.get("rationale") or "Proposed for this goal.").strip()[:1000],
     )
+
+
+def _budget(raw: object) -> int:
+    """An agent's iteration budget, clamped to something a person would accept.
+
+    The model is asked for this because it is a structural decision — an agent
+    that must produce, check and correct needs more attempts than one that
+    summarises — but an unbounded value is somebody's bill.
+    """
+    try:
+        wanted = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 6
+    return max(1, min(20, wanted))
 
 
 def _slug(text: str, limit: int = 48) -> str:
@@ -555,11 +604,19 @@ def _attach_connectors(
 
     for agent in planned:
         template = templates.get(agent.name)
-        wanted = template.wants_connectors if template else ()
-        if not wanted and not (model_proposed and _looks_like_it_needs_tools(agent)):
+        if template is not None:
+            wanted, writes = template.wants_connectors, template.connector_writes
+        elif model_proposed:
+            # A model-designed team has names nothing here anticipated, so what
+            # it needs is read from what it *said* — the skills it asked for and
+            # the job it described.
+            wanted, writes = _inferred_connector_need(agent)
+        else:
             continue
 
-        writes = bool(template.connector_writes) if template else True
+        if not wanted:
+            continue
+
         matched = _matching_connectors(connectors, wanted, writes=writes)
         if matched:
             resolved.setdefault(agent.name, [])
@@ -636,27 +693,42 @@ def _matching_connectors(
     for skill in connectors:
         if not writes and not skill.definition.get("read_only"):
             continue
-        if not wanted:
-            matched.append(skill)
-            continue
         haystack = f"{skill.name} {skill.description}".lower()
-        if any(keyword.lower() in haystack for keyword in wanted):
+        if any(keyword == "" or keyword.lower() in haystack for keyword in wanted):
             matched.append(skill)
     return matched
 
 
-def _looks_like_it_needs_tools(agent: PlannedAgent) -> bool:
-    """Whether a model-proposed agent described a job it cannot do with words.
+#: Words in a proposed agent's own description that mean it has to touch
+#: something outside the platform, and whether doing so changes anything there.
+_READ_SIGNALS = (
+    "repository", "repo", "codebase", "source", "file", "read", "search",
+    "inspect", "review", "fetch", "look up",
+)
+_WRITE_SIGNALS = (
+    "pull request", "merge", "commit", "push", "branch", "deploy", "publish",
+    "create", "write", "update", "open a pr", "land",
+)
 
-    The model names skills it wants; when those name an action on an external
-    system, connected tools are offered rather than leaving it to describe the
-    action it was asked to perform.
+
+def _inferred_connector_need(agent: PlannedAgent) -> tuple[tuple[str, ...], bool]:
+    """What a model-designed agent needs from connected systems.
+
+    Read from what the model said about the agent, because the platform has no
+    template for a role it did not write. An agent that describes opening a pull
+    request is offered the tools to open one; one that only reads is offered only
+    read tools, so a reviewer does not end up able to merge.
     """
     haystack = f"{agent.role} {agent.objective} {' '.join(agent.skills)}".lower()
-    return any(
-        verb in haystack
-        for verb in ("repository", "pull request", "commit", "merge", "deploy", "file")
-    )
+
+    writes = any(signal in haystack for signal in _WRITE_SIGNALS)
+    needs = writes or any(signal in haystack for signal in _READ_SIGNALS)
+    if not needs:
+        return (), False
+
+    # No keyword filter: the agent said it needs the outside world, and the
+    # platform has no basis for guessing which of the tenant's tools it means.
+    return ("",), writes
 
 
 def _ensure_retrieval_skill(tenant_id: str, handle: str):
@@ -692,7 +764,7 @@ def _build_graph(
     resolved: dict[str, list[str]],
     tenant_id: str,
     answers: dict[str, str],
-    intent: blueprints.Intent,
+    budgets: Budgets,
 ) -> WorkflowGraph:
     """Create the agents and lay them out as a runnable workflow.
 
@@ -711,7 +783,6 @@ def _build_graph(
     ]
     edges: list[WorkflowEdge] = []
     previous = "input"
-    budgets = {template.name: template.max_iterations for template in intent.agents}
 
     for index, agent in enumerate(planned, start=1):
         stored = agent_registry.create(

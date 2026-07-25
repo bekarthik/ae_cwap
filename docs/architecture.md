@@ -295,23 +295,43 @@ each hid the others:
 The last is the important one. The stream is how a run *feels* live; the run
 report is how the canvas *knows* what happened, and it is always reachable.
 
-### Design falls back to a proposal when no blueprint fits
+### The goal decides the structure
 
-`classify_with_confidence` reports how strongly a goal matched. A single keyword
-in a forty-word brief is a coincidence, not a reading — it is how a request to
-build a software organisation became "research, then write it up".
+How many agents a workflow needs, what each hands to the next, and how much each
+may iterate are properties of the goal. They cannot be settled before reading it.
 
-On a weak match the model is asked to propose a team, validated against the same
-contracts: an agent count within the ceiling, no duplicate names, objectives that
-reference the bindings they will actually receive, and skills that are either
-found or synthesised. Any failure falls back to the blueprint, so a goal the
-model cannot plan for still produces a working workflow. The response says when a
-design was proposed, because that one will not be identical next time.
+This was originally the other way round: a blueprint fixed the team and the model
+was asked only to reword it, under a prompt that said *"return exactly the same
+number of agents, in the same order"*. That is how a request for a whole software
+development organisation came back as three writers — the count was decided
+before anything read the request.
 
-Iteration lives inside agents rather than in the graph. A review-and-rework cycle
-is a cycle, and the graph contract rejects those; an engineer that must write,
-check and correct simply gets a larger iteration budget, which expresses the same
-thing where it can actually happen.
+Now the model plans, and the blueprint has two smaller jobs:
+
+* **A hint.** When classification is confident, the shape that usually works for
+  that kind of request is offered as context — explicitly as something the model
+  may ignore, use partially, or replace.
+* **A fallback.** No usable model, or a plan that does not validate, and the
+  blueprint runs. A deployment on the offline stub, or a small local model that
+  cannot return clean JSON, still gets a coherent workflow.
+
+A plan is validated against the same contracts as everything else: within the
+agent ceiling, no duplicate names, objectives that reference the bindings they
+will actually receive, and skills that are either found or synthesised. One bad
+agent rejects the whole plan, because half a design is not a design.
+
+`MAX_AGENTS` is a bound on review effort and cost, not an opinion about
+structure. Every agent is a stored object with its own memory and its own chain
+of model calls.
+
+**Iteration lives inside agents**, not in the graph. A review-and-rework cycle is
+a cycle and the graph contract rejects those, so an agent that must produce,
+check and correct is given a larger budget — the model sets it per agent, since
+only the plan knows which agents those are. The value is clamped: structural
+decisions are the model's, somebody's bill is not.
+
+What this costs is repeatability. A design is no longer identical between runs,
+so the response says when it was planned rather than taken from a blueprint.
 
 ### A token is a claim; the database is the truth
 
