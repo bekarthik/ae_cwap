@@ -55,9 +55,16 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* `font` and `color` were inherited here from the start; `background` was
+   missed, and that omission is a dark-theme bug rather than a tidiness one. A
+   button with no background of its own falls back to the UA's `ButtonFace`,
+   which stays pale whatever the page does — so inherited near-white text landed
+   on a near-white button and the label disappeared. It was invisible in review
+   because in the light theme `ButtonFace` happens to match our surface. */
 button {
   font: inherit;
   color: inherit;
+  background: transparent;
   cursor: pointer;
 }
 
@@ -636,6 +643,31 @@ button.list-item:hover:not(:disabled) {
   display: none;
 }
 
+/* React Flow ships its own palette, and it is a light one. Left alone, the zoom
+   controls and the minimap stay pale rectangles on a dark canvas — the same
+   fault as a button inheriting `ButtonFace`, arriving from a library instead of
+   from the browser. Pointing them at our variables is enough; there is no dark
+   stylesheet to import and a second set of colours to keep in step would be
+   worse than four rules. */
+.react-flow__controls-button {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  fill: var(--text);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--surface-2);
+}
+
+.react-flow__minimap {
+  background: var(--surface);
+}
+
+.react-flow__minimap-mask {
+  fill: var(--bg);
+  fill-opacity: 0.65;
+}
+
 /* ---- design conversation, roster and memory --------------------------- */
 
 .modal--wide {
@@ -864,7 +896,6 @@ button.list-item:hover:not(:disabled) {
 
 .picker .list-item {
   width: 100%;
-  background: transparent;
   cursor: pointer;
   text-align: left;
 }
@@ -877,11 +908,6 @@ button.list-item:hover:not(:disabled) {
   font-size: 12px;
   overflow-x: auto;
   margin: 0 0 8px;
-}
-
-button.status-pill {
-  background: transparent;
-  cursor: pointer;
 }
 
 @media (max-width: 720px) {

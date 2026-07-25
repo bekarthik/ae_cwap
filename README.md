@@ -197,6 +197,7 @@ list. The ones that matter:
 | `CWAP_MCP_DIRECTORY` | `true` — the built-in server list is connectable | `off` to require the allow-list for every host |
 | `CWAP_LLM_TIMEOUT` | `600` seconds | lower it on hosted models, or raise it in Models per workspace |
 | `CWAP_MCP_ALLOWED_COMMANDS` | empty — stdio MCP servers disabled | commands a stdio MCP server may launch |
+| `CWAP_MCP_TIMEOUT` | `60` seconds | raise it for an MCP server behind a slow proxy (`CWAP_MCP_CONNECT_TIMEOUT`, default `10`, bounds *reaching* the host separately) |
 | `CWAP_SECRET_KEY` | falls back to the JWT secret | encrypts stored provider keys and MCP credentials |
 
 A production-shaped stack (Postgres, Redis, gateway, two workers, canvas):
@@ -345,6 +346,13 @@ A tool that can change something needs the same `WRITE_EXTERNAL` scope an HTTP
 node does and passes the same two-phase gate, so a redelivered step cannot open
 two pull requests. Tools a server marks read-only are exempt — reading a
 repository is not a side effect.
+
+**When a connection fails, the error says which kind of failure it was.**
+Reaching the host is bounded separately (`CWAP_MCP_CONNECT_TIMEOUT`, 10s) from
+waiting for it to answer (`CWAP_MCP_TIMEOUT`, 60s), because those have different
+remedies: an unreachable host means the URL is wrong or the deployment has no
+egress, and waiting longer will never help; a server that accepted the
+connection and went quiet is the one worth waiting for.
 
 ---
 

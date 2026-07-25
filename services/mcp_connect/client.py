@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import threading
 from concurrent.futures import Future
 from contextlib import AsyncExitStack
@@ -31,14 +32,62 @@ from mcp_connect.policy import MCPPolicyError, assert_permitted
 
 logger = logging.getLogger("cwap.mcp")
 
-#: A server that cannot complete a handshake in this long is not usable for an
-#: agent loop, where a person is watching a run.
-CONNECT_TIMEOUT = 30.0
-CALL_TIMEOUT = 120.0
+
+def _seconds(name: str, default: float) -> float:
+    """A timeout from the environment, ignoring anything unusable."""
+    try:
+        value = float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+#: How long a handshake may take. Sixty seconds rather than thirty because the
+#: thirty was chosen against a server on localhost: a hosted server behind a
+#: TLS-inspecting corporate proxy, or one that cold-starts, routinely needs more
+#: — and there was no way to ask for more, since this was a constant.
+CONNECT_TIMEOUT = _seconds("CWAP_MCP_TIMEOUT", 60.0)
+
+#: How long one tool call may take. A repository search over a large org is not
+#: a hung server.
+CALL_TIMEOUT = _seconds("CWAP_MCP_CALL_TIMEOUT", 120.0)
+
+#: How long to wait to *reach* the host, as opposed to waiting for the server to
+#: answer. Deliberately short and deliberately separate: those are two different
+#: faults with two different remedies, and merging them is what made an
+#: unreachable host and a wedged server produce the same sentence after the same
+#: thirty seconds. A TCP handshake that has not completed in ten seconds is not
+#: going to.
+REACH_TIMEOUT = _seconds("CWAP_MCP_CONNECT_TIMEOUT", 10.0)
+
+#: Added to the transport's own deadline to get the outer one. The outer wall
+#: must fire *after* the transport, or it pre-empts a specific, actionable error
+#: ("the connection timed out") with a generic one ("did not respond") — which
+#: is precisely what a blanket timeout equal to the SDK's default did.
+GRACE = 10.0
 
 
 class MCPError(RuntimeError):
     """A server could not be reached, or a tool call failed."""
+
+
+#: httpx raises its timeout errors with an *empty* `str()`, so the generic
+#: fallback renders them as a bare class name — "ConnectTimeout" — which is a
+#: fact about our stack rather than an answer to "what do I do now".
+#:
+#: Only the types whose own message is empty are listed. An exception that says
+#: something for itself keeps saying it: "Name or service not known" is the most
+#: useful sentence a mistyped hostname can produce, and a table entry that
+#: replaced it would be a downgrade dressed as an improvement.
+_SILENT_FAULTS = {
+    "ConnectTimeout": (
+        "could not reach the host — the connection timed out. Check the URL, and "
+        "whether this deployment is allowed to make outbound connections"
+    ),
+    "ReadTimeout": "the host accepted the connection and then sent nothing back",
+    "WriteTimeout": "the request could not be sent in time",
+    "PoolTimeout": "no connection slot was free in time",
+}
 
 
 def explain(exc: BaseException) -> str:
@@ -59,13 +108,26 @@ def explain(exc: BaseException) -> str:
             for sub in inner:
                 walk(sub)
             return
-        text = str(error).strip() or type(error).__name__
+        name = type(error).__name__
+        text = str(error).strip() or _SILENT_FAULTS.get(name) or name
         if text not in leaves:
             leaves.append(text)
 
     walk(exc)
     # Three is enough to see a pattern without pasting a stack into a dialog.
     return "; ".join(leaves[:3]) or f"{type(exc).__name__}"
+
+
+def _target(config: MCPServerConfig) -> str:
+    """What was being reached, for an error a person has to act on.
+
+    Somebody debugging a failed connection is usually looking at a form with
+    several fields in it; naming the one that was actually used costs nothing
+    and saves a round of guessing.
+    """
+    if config.transport is MCPTransport.STDIO:
+        return config.command or "the configured command"
+    return config.url or "the configured URL"
 
 
 class _LoopThread:
@@ -91,12 +153,25 @@ class _LoopThread:
             return self._loop
 
     def submit(self, coroutine, timeout: float) -> Any:
-        future: Future = asyncio.run_coroutine_threadsafe(coroutine, self.loop())
+        # The deadline is enforced *inside* the loop, with `wait_for`, rather
+        # than by abandoning the future out here. `Future.cancel()` on a
+        # coroutine that has already started is a no-op, so every timed-out
+        # attempt used to leave its task running for the life of the process —
+        # holding a socket, or a subprocess, that nobody would ever close.
+        future: Future = asyncio.run_coroutine_threadsafe(
+            asyncio.wait_for(coroutine, timeout), self.loop()
+        )
         try:
-            return future.result(timeout=timeout)
+            # Above the inner deadline: this one only fires if the *cancellation*
+            # wedges, which is a different fault and worth not hanging on.
+            return future.result(timeout=timeout + GRACE)
         except TimeoutError as exc:
             future.cancel()
-            raise MCPError(f"the MCP server did not respond within {timeout:.0f}s") from exc
+            raise MCPError(
+                f"the MCP server did not respond within {timeout:.0f}s. "
+                "It accepted the connection and then went quiet; raise "
+                "CWAP_MCP_TIMEOUT if the server is simply slow."
+            ) from exc
 
     def shutdown(self) -> None:
         with self._lock:
@@ -170,7 +245,7 @@ class MCPClient:
         except (MCPError, MCPPolicyError):
             raise
         except BaseException as exc:  # noqa: BLE001 - includes ExceptionGroup
-            raise MCPError(f"could not connect: {explain(exc)}") from exc
+            raise MCPError(f"could not connect to {_target(config)}: {explain(exc)}") from exc
 
     def disconnect(self, server_id: str) -> None:
         with self._lock:
@@ -203,7 +278,7 @@ class MCPClient:
         except MCPError:
             raise
         except BaseException as exc:  # noqa: BLE001 - includes ExceptionGroup
-            raise MCPError(f"could not connect: {explain(exc)}") from exc
+            raise MCPError(f"could not connect to {_target(config)}: {explain(exc)}") from exc
 
         with self._lock:
             # Another thread may have connected while this one was waiting; keep
@@ -317,7 +392,19 @@ async def _open_transport(stack: AsyncExitStack, config: MCPServerConfig, creden
 
     headers = {str(k): str(v) for k, v in credentials.items()}
     streams = await stack.enter_async_context(
-        streamablehttp_client(config.url, headers=headers or None)
+        streamablehttp_client(
+            config.url,
+            headers=headers or None,
+            # `timeout` is the connect/write deadline and `sse_read_timeout` is
+            # how long to wait for the server to say something. Splitting them is
+            # the whole point: a host that never completes a TCP handshake fails
+            # in REACH_TIMEOUT with an error that names the host, instead of
+            # looking identical to a server that is merely thinking.
+            timeout=REACH_TIMEOUT,
+            # One number for the life of the session, so it has to cover the
+            # slowest thing the session will do — a tool call, not the handshake.
+            sse_read_timeout=max(CONNECT_TIMEOUT, CALL_TIMEOUT),
+        )
     )
     return streams[0], streams[1]
 
