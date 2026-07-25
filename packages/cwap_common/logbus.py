@@ -111,6 +111,52 @@ class LogBus:
         self.publish(record)
         return record
 
+    def transient(
+        self,
+        run_id: str,
+        event: str,
+        *,
+        node: str | None = None,
+        message: str = "",
+        data: dict[str, Any] | None = None,
+    ) -> LogEvent:
+        """A live-only event: fanned out and relayed, never written down.
+
+        Token fragments are why this exists. They are worth watching and
+        worthless afterwards — the finished text is already on the step — so
+        persisting one row per fragment would multiply `run_logs` by a thousand
+        to store something the report holds in one piece.
+
+        The sequence number is the current high-water mark rather than a new
+        one. A client that reconnects and asks for "everything after N" then
+        gets a complete durable history with no gaps where a transient event
+        used to be, because a transient event never consumed a number.
+
+        That reused number is exactly why `transient: true` is stamped into the
+        data: a subscriber discards anything at or below the sequence it has
+        already replayed, which would otherwise discard every one of these.
+        """
+        record = LogEvent(
+            run_id=run_id,
+            seq=self._current_seq(run_id),
+            node=node,
+            level=LogLevel.INFO,
+            event=event,
+            message=message[:2000],
+            data={**_scrub(data or {}), "transient": True},
+        )
+        self._fan_out(record)
+        if self._relay is not None:
+            with suppress(Exception):  # a live tail must never fail a run
+                self._relay.publish(record)
+        return record
+
+    def _current_seq(self, run_id: str) -> int:
+        with self._lock:
+            if run_id not in self._sequences:
+                self._sequences[run_id] = self._highest_persisted(run_id)
+            return self._sequences[run_id]
+
     def publish(self, record: LogEvent) -> None:
         """Persist, fan out locally, and relay to other processes."""
         with unit_of_work() as session:

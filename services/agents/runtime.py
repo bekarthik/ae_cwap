@@ -39,6 +39,7 @@ from llm_proxy.client import (
     LLMRefusal,
     get_provider,
 )
+from llm_proxy.live import LiveText
 from memory import service as memory_service
 from skills import execution as skill_execution
 from skills import registry as skill_registry
@@ -61,6 +62,10 @@ class AgentRunContext:
     workflow_memory_scope: str = ""
     allow_side_effects: bool = False
     emit: Any = None
+    #: Live-only publisher for output as the model produces it. Separate from
+    #: `emit` because these are never persisted: the finished answer is on the
+    #: step, and a row per fragment would bury the run report in its own tokens.
+    stream: Any = None
 
 
 @dataclass
@@ -195,12 +200,14 @@ def _think(provider, messages, system, tools, agent, iteration, context):
         f"'{agent.name}' iteration {iteration}/{agent.max_iterations}",
         {"iteration": iteration, "skills_offered": len(tools)},
     )
+    live = _live_sink(agent, iteration, context)
     try:
         completion = provider.converse(
             messages,
             system=system,
             tools=tools or None,
             options=GenerationOptions(effort=None, max_tokens=None),
+            on_delta=live,
         )
     except LLMRefusal as exc:
         raise AgentError(
@@ -209,6 +216,11 @@ def _think(provider, messages, system, tools, agent, iteration, context):
         ) from exc
     except LLMProxyError as exc:
         raise AgentError(f"agent '{agent.name}' could not reach the model: {exc}") from exc
+    finally:
+        # Even on a failure: what the model managed to say before it broke is
+        # the most useful thing on the screen at that moment.
+        if live is not None:
+            live.flush()
 
     if completion.reasoning:
         _emit(
@@ -218,6 +230,35 @@ def _think(provider, messages, system, tools, agent, iteration, context):
             {"iteration": iteration, "reasoning": completion.reasoning},
         )
     return completion
+
+
+def _live_sink(agent, iteration: int, context: AgentRunContext):
+    """Publish this turn's output as it is written, if anyone is watching.
+
+    Returns None when the run has no live channel — a design-time call, a test,
+    a workflow executed outside the orchestrator — so the provider does the
+    ordinary thing and nothing pays for a stream nobody is reading.
+    """
+    if context is None or getattr(context, "stream", None) is None:
+        return None
+
+    def publish(kind: str, text: str) -> None:
+        # The fragment travels in `data`, never in `message`: every contract
+        # model strips leading and trailing whitespace from its string fields,
+        # which would silently glue "Here" and "is" into "Hereis" at every
+        # chunk boundary. `data` values are untyped and arrive as sent.
+        context.stream(
+            "agent.streaming",
+            message=f"{agent.name} is {'thinking' if kind == 'reasoning' else 'writing'}",
+            data={
+                "agent": agent.name,
+                "iteration": iteration,
+                "kind": kind,
+                "text": text,
+            },
+        )
+
+    return LiveText(publish)
 
 
 #: Reasoning runs long — often longer than the answer. The log line carries

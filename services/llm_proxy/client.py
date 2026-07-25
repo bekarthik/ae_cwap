@@ -24,17 +24,26 @@ from __future__ import annotations
 
 import hashlib
 import textwrap
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from cwap_common.settings import get_settings
 
-from llm_proxy import reasoning
+from llm_proxy import reasoning, streaming
 from llm_proxy.catalogue import capabilities_for, is_catalogued
 from llm_proxy.presets import NATIVE_PROVIDERS, Preset, resolve
 
 #: Effort levels the Anthropic API accepts, cheapest first.
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+#: Called with ("content" | "reasoning", fragment) as an answer is produced.
+#:
+#: Optional everywhere. A caller that passes nothing gets exactly the behaviour
+#: it had before streaming existed — one call, one finished answer — so nothing
+#: outside the agent loop had to learn a new shape.
+DeltaSink = Callable[[str, str], None]
 
 
 class LLMProxyError(RuntimeError):
@@ -186,7 +195,12 @@ class LLMProvider(Protocol):
     capabilities: ProviderCapabilities
 
     def complete(
-        self, prompt: str, *, system: str | None = None, options: GenerationOptions | None = None
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion: ...
 
     def converse(
@@ -196,6 +210,7 @@ class LLMProvider(Protocol):
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion: ...
 
 
@@ -270,11 +285,22 @@ class StubProvider:
         )
 
     def complete(
-        self, prompt: str, *, system: str | None = None, options: GenerationOptions | None = None
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         digest = hashlib.sha256(f"{system or ''}\x00{prompt}".encode()).hexdigest()[:12]
         summary = textwrap.shorten(" ".join(prompt.split()), width=240, placeholder="…")
         text = f"[stub:{digest}] {summary}"
+        # The offline default streams as well, in word-sized pieces. Not for
+        # realism: it means the delta path is exercised by every test and every
+        # demo that runs without a model, instead of only where one is configured.
+        if on_delta is not None:
+            for index, word in enumerate(text.split(" ")):
+                on_delta("content", word if index == 0 else f" {word}")
         return LLMCompletion(
             text=text,
             model=self.capabilities.model,
@@ -291,6 +317,7 @@ class StubProvider:
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         """Never requests a tool, so an agent loop terminates in one iteration.
 
@@ -299,7 +326,7 @@ class StubProvider:
         than relying on a stub guessing when to call something.
         """
         transcript = "\n".join(f"{m.role}: {m.content}" for m in messages if m.content)
-        return self.complete(transcript, system=system, options=options)
+        return self.complete(transcript, system=system, options=options, on_delta=on_delta)
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +391,12 @@ class AnthropicProvider:
         )
 
     def complete(
-        self, prompt: str, *, system: str | None = None, options: GenerationOptions | None = None
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         settings = get_settings()
         options = options or GenerationOptions()
@@ -391,18 +423,7 @@ class AnthropicProvider:
         if "stop" in accepted:
             request["stop_sequences"] = list(accepted["stop"])
 
-        try:
-            response = self._client.beta.messages.create(**request)
-        except TypeError:
-            # An older SDK build may not type the `fallbacks` scalar form yet.
-            # Losing the fallback is acceptable; losing the call is not.
-            request.pop("fallbacks", None)
-            request.pop("betas", None)
-            response = self._client.messages.create(**request)
-        except self._anthropic.APIStatusError as exc:
-            raise LLMProxyError(f"Claude API error {exc.status_code}: {exc.message}") from exc
-        except self._anthropic.APIConnectionError as exc:
-            raise LLMProxyError(f"could not reach the Claude API: {exc}") from exc
+        response = self._request(request, on_delta)
 
         # Check the stop reason before touching content: on a refusal, `content`
         # is empty or a discarded partial.
@@ -435,6 +456,7 @@ class AnthropicProvider:
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         """Multi-turn with native tool use.
 
@@ -469,16 +491,7 @@ class AnthropicProvider:
                 for tool in tools
             ]
 
-        try:
-            response = self._client.beta.messages.create(**request)
-        except TypeError:
-            request.pop("fallbacks", None)
-            request.pop("betas", None)
-            response = self._client.messages.create(**request)
-        except self._anthropic.APIStatusError as exc:
-            raise LLMProxyError(f"Claude API error {exc.status_code}: {exc.message}") from exc
-        except self._anthropic.APIConnectionError as exc:
-            raise LLMProxyError(f"could not reach the Claude API: {exc}") from exc
+        response = self._request(request, on_delta)
 
         if getattr(response, "stop_reason", None) == "refusal":
             details = getattr(response, "stop_details", None)
@@ -511,6 +524,76 @@ class AnthropicProvider:
             ignored_options=ignored,
             metadata={"provider": "anthropic", "effort": effort},
         )
+
+    # ---- transport ------------------------------------------------------
+
+    def _request(self, request: dict[str, Any], on_delta: DeltaSink | None) -> Any:
+        """One Messages call, read as it is produced.
+
+        The SDK's streaming helper accumulates exactly the message a blocking
+        call would have returned, so everything downstream — refusal check, text
+        blocks, thinking blocks, tool_use blocks — is unchanged. What changes is
+        that the text arrives while the model is writing it, and that a timeout
+        now measures silence rather than total length.
+        """
+        try:
+            if get_settings().llm_stream_mode == "off":
+                return self._blocking(request)
+            return self._streamed(request, on_delta)
+        except self._anthropic.APIStatusError as exc:
+            raise LLMProxyError(f"Claude API error {exc.status_code}: {exc.message}") from exc
+        except self._anthropic.APIConnectionError as exc:
+            raise LLMProxyError(f"could not reach the Claude API: {exc}") from exc
+
+    def _blocking(self, request: dict[str, Any]) -> Any:
+        try:
+            return self._client.beta.messages.create(**request)
+        except TypeError:
+            # An older SDK build may not type the `fallbacks` scalar form yet.
+            # Losing the fallback is acceptable; losing the call is not.
+            return self._client.messages.create(**_without_beta(request))
+
+    def _streamed(self, request: dict[str, Any], on_delta: DeltaSink | None) -> Any:
+        try:
+            manager = self._client.beta.messages.stream(**request)
+        except TypeError:
+            manager = self._client.messages.stream(**_without_beta(request))
+
+        try:
+            with manager as stream:
+                for event in stream:
+                    _forward_anthropic_delta(event, on_delta)
+                return stream.get_final_message()
+        except TypeError:
+            # The keyword was only rejected once the request was actually built.
+            with self._client.messages.stream(**_without_beta(request)) as stream:
+                for event in stream:
+                    _forward_anthropic_delta(event, on_delta)
+                return stream.get_final_message()
+
+
+def _without_beta(request: dict[str, Any]) -> dict[str, Any]:
+    """The same request an SDK build without server-side fallback will accept."""
+    return {
+        key: value for key, value in request.items() if key not in ("betas", "fallbacks")
+    }
+
+
+def _forward_anthropic_delta(event: Any, on_delta: DeltaSink | None) -> None:
+    """Hand one streamed fragment to the caller's sink.
+
+    Claude sends text and thinking as separate delta types on the same content
+    block stream, which is why they can be told apart here without the caller
+    knowing anything about Anthropic's event shapes.
+    """
+    if on_delta is None or getattr(event, "type", "") != "content_block_delta":
+        return
+    delta = getattr(event, "delta", None)
+    kind = getattr(delta, "type", "")
+    if kind == "text_delta" and getattr(delta, "text", ""):
+        on_delta("content", delta.text)
+    elif kind == "thinking_delta" and getattr(delta, "thinking", ""):
+        on_delta("reasoning", delta.thinking)
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +652,11 @@ class OpenAICompatibleProvider:
         self._thinking = (
             thinking and reasoning.knows(provider) and settings.llm_thinking_mode != "off"
         )
+        # Read every answer as it is produced. Same downgrade shape as tools and
+        # reasoning: a server that will not stream, or will not report usage on a
+        # stream, says so once and is not asked again.
+        self._streaming = settings.llm_stream_mode != "off"
+        self._stream_usage = True
         self.capabilities = ProviderCapabilities(
             provider=provider,
             label=label or provider,
@@ -591,7 +679,12 @@ class OpenAICompatibleProvider:
         )
 
     def complete(
-        self, prompt: str, *, system: str | None = None, options: GenerationOptions | None = None
+        self,
+        prompt: str,
+        *,
+        system: str | None = None,
+        options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         options = options or GenerationOptions()
         _accepted, ignored = _filter_options(options, self.capabilities)
@@ -604,7 +697,7 @@ class OpenAICompatibleProvider:
         payload = self._base_payload(options)
         payload["messages"] = messages
 
-        body = self._send(payload, tools_requested=False)
+        body = self._send(payload, tools_requested=False, on_delta=on_delta)
         choice = body["choices"][0]
         message = choice.get("message") or {}
         finish_reason = choice.get("finish_reason") or "stop"
@@ -640,6 +733,7 @@ class OpenAICompatibleProvider:
         system: str | None = None,
         tools: list[dict[str, Any]] | None = None,
         options: GenerationOptions | None = None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         """Multi-turn, with native tool calling when the server supports it.
 
@@ -651,10 +745,10 @@ class OpenAICompatibleProvider:
         failing the agent's turn.
         """
         if tools and self._tool_mode == "prompted":
-            return self._converse_prompted(messages, system, tools, options)
+            return self._converse_prompted(messages, system, tools, options, on_delta)
 
         try:
-            return self._converse_native(messages, system, tools, options)
+            return self._converse_native(messages, system, tools, options, on_delta)
         except _ToolsUnsupported:
             # The server has now told us for certain, which outranks anything the
             # catalogue guessed. Recorded as "observed" so the canvas can say so
@@ -663,7 +757,7 @@ class OpenAICompatibleProvider:
             self.capabilities = replace(
                 self.capabilities, supports_tools=False, tool_support="observed"
             )
-            return self._converse_prompted(messages, system, tools or [], options)
+            return self._converse_prompted(messages, system, tools or [], options, on_delta)
 
     def _converse_native(
         self,
@@ -671,6 +765,7 @@ class OpenAICompatibleProvider:
         system: str | None,
         tools: list[dict[str, Any]] | None,
         options: GenerationOptions | None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         payload = self._base_payload(options)
         payload["messages"] = _to_openai_messages(messages, system)
@@ -688,7 +783,7 @@ class OpenAICompatibleProvider:
             ]
             payload["tool_choice"] = "auto"
 
-        body = self._send(payload, tools_requested=bool(tools))
+        body = self._send(payload, tools_requested=bool(tools), on_delta=on_delta)
         choice = body["choices"][0]
         message = choice.get("message") or {}
 
@@ -730,6 +825,7 @@ class OpenAICompatibleProvider:
         system: str | None,
         tools: list[dict[str, Any]],
         options: GenerationOptions | None,
+        on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         """Tool use for models that have none.
 
@@ -745,7 +841,15 @@ class OpenAICompatibleProvider:
             messages, _prompted_system(system, tools) if tools else system
         )
 
-        body = self._send(payload, tools_requested=False)
+        # With tools on offer the answer may turn out to be a protocol message
+        # rather than prose, and streaming it would put `{"tool": "sum…` on the
+        # screen as though the agent were saying it. The reasoning still streams,
+        # which is the part worth watching while a thinking model decides.
+        body = self._send(
+            payload,
+            tools_requested=False,
+            on_delta=_reasoning_only(on_delta) if tools else on_delta,
+        )
         choice = body["choices"][0]
         message = choice.get("message") or {}
         # The call is looked for in the answer only. A thinking model drafts and
@@ -782,8 +886,13 @@ class OpenAICompatibleProvider:
                 options.max_tokens or settings.llm_max_tokens, self.capabilities
             ),
             "temperature": accepted.get("temperature", settings.llm_temperature),
-            "stream": False,
+            "stream": self._streaming,
         }
+        if self._streaming and self._stream_usage:
+            # Token counts are not sent on a stream unless they are asked for.
+            # Separate from `stream` itself so a server that dislikes this
+            # parameter loses its token counts, not the live answer.
+            payload["stream_options"] = dict(streaming.USAGE_OPTION)
         if "top_p" in accepted:
             payload["top_p"] = accepted["top_p"]
         if "stop" in accepted:
@@ -793,28 +902,47 @@ class OpenAICompatibleProvider:
             payload.update(reasoning.request_fields(self.capabilities.provider, effort))
         return payload
 
-    def _send(self, payload: dict[str, Any], *, tools_requested: bool) -> dict[str, Any]:
-        """POST, and give up on the reasoning parameter if that is what was wrong.
+    def _send(
+        self,
+        payload: dict[str, Any],
+        *,
+        tools_requested: bool,
+        on_delta: DeltaSink | None = None,
+    ) -> dict[str, Any]:
+        """POST, dropping whichever optional parameter the server refuses.
 
-        The catalogue's view of which models think is a hint, and a local server
-        may be an older build that never learned the parameter. Rather than fail
-        the turn, the request is sent again without it and this provider stops
-        asking — one retried call, once, instead of a broken run.
+        Three of them can be refused independently — the reasoning parameter,
+        the streaming flag, and the request for token counts on a stream — and
+        every one of them is optional. What the catalogue and the presets know
+        is a hint; what this server does when asked is the answer. So a refusal
+        costs one retried call and is remembered for the life of this provider,
+        rather than failing a turn over a parameter nobody needed.
         """
-        try:
-            return self._post(
-                payload, tools_requested=tools_requested, reasoning_requested=self._thinking
-            )
-        except _ReasoningUnsupported:
-            self._thinking = False
-            # The model may still think unprompted, so `supports_thinking` stands;
-            # what this server has told us is that the *depth* cannot be asked for.
-            self.capabilities = replace(self.capabilities, supports_effort=False)
-            return self._post(
-                reasoning.strip(payload),
-                tools_requested=tools_requested,
-                reasoning_requested=False,
-            )
+        for _attempt in range(len(_OPTIONAL_PARAMETERS) + 1):
+            try:
+                return self._post(
+                    payload,
+                    tools_requested=tools_requested,
+                    reasoning_requested=self._thinking,
+                    on_delta=on_delta,
+                )
+            except _ReasoningUnsupported:
+                self._thinking = False
+                # The model may still think unprompted, so `supports_thinking`
+                # stands; what this server refused is the *depth* parameter.
+                self.capabilities = replace(self.capabilities, supports_effort=False)
+                payload = reasoning.strip(payload)
+            except _UsageUnsupported:
+                self._stream_usage = False
+                payload = _without(payload, "stream_options")
+            except _StreamingUnsupported:
+                self._streaming = False
+                payload = _without(payload, "stream_options") | {"stream": False}
+
+        # Unreachable: each downgrade is permanent, so the loop cannot cycle.
+        raise LLMProxyError(
+            f"{self.capabilities.label} refused every request shape this client can make"
+        )
 
     def _post(
         self,
@@ -822,40 +950,95 @@ class OpenAICompatibleProvider:
         *,
         tools_requested: bool,
         reasoning_requested: bool = False,
+        on_delta: DeltaSink | None = None,
     ) -> dict[str, Any]:
         import httpx  # noqa: PLC0415
 
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        url = f"{self._base_url}/chat/completions"
+        received = _Received()
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                response = client.post(
-                    f"{self._base_url}/chat/completions", json=payload, headers=headers
-                )
+                if not payload.get("stream"):
+                    response = client.post(url, json=payload, headers=headers)
+                    self._raise_for_status(
+                        response,
+                        tools_requested=tools_requested,
+                        reasoning_requested=reasoning_requested,
+                        streamed=False,
+                    )
+                    return self._body(response)
+
+                with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code >= 400:
+                        # Nothing has been read yet, and the error explanation
+                        # needs the body.
+                        response.read()
+                        self._raise_for_status(
+                            response,
+                            tools_requested=tools_requested,
+                            reasoning_requested=reasoning_requested,
+                            streamed=True,
+                        )
+                    sink = received.watching(on_delta)
+                    if not _is_event_stream(response):
+                        return self._read_whole(response, sink)
+                    return streaming.assemble(response.iter_lines(), on_delta=sink)
+        except streaming.StreamInterrupted as exc:
+            raise LLMProxyError(
+                f"{self.capabilities.label} failed part-way through its answer: {exc}"
+            ) from exc
         except httpx.ConnectError as exc:
             raise LLMProxyError(
                 f"could not reach {self._base_url} — is the server running? ({exc})"
             ) from exc
         except httpx.TimeoutException as exc:
-            raise LLMProxyError(
-                f"{self.capabilities.label} did not respond within {self._timeout}s. "
-                "A local model on modest hardware can take minutes, especially a "
-                "reasoning model — raise \"How long to wait\" in Models, or set "
-                "CWAP_LLM_TIMEOUT for the whole deployment."
-            ) from exc
+            raise LLMProxyError(self._explain_timeout(received)) from exc
 
-        if response.status_code >= 400:
-            detail = self._explain_error(response)
-            # Reasoning first: dropping it costs nothing else, whereas a tools
-            # downgrade gives up native tool calling for the rest of the process.
-            if reasoning_requested and reasoning.looks_rejected(response.text):
-                raise _ReasoningUnsupported(detail)
-            if tools_requested and _looks_like_tool_rejection(response):
-                raise _ToolsUnsupported(detail)
-            raise LLMProxyError(detail)
+    def _raise_for_status(
+        self,
+        response: Any,
+        *,
+        tools_requested: bool,
+        reasoning_requested: bool,
+        streamed: bool,
+    ) -> None:
+        """Sort a 4xx into "drop a parameter and retry" or "tell the user"."""
+        if response.status_code < 400:
+            return
 
+        detail = self._explain_error(response)
+        # Reasoning first: dropping it costs nothing else, whereas a tools
+        # downgrade gives up native tool calling for the rest of the process.
+        if reasoning_requested and reasoning.looks_rejected(response.text):
+            raise _ReasoningUnsupported(detail)
+        refused = streaming.rejection(response.text) if streamed else None
+        if refused == "stream_options":
+            raise _UsageUnsupported(detail)
+        if refused == "stream":
+            raise _StreamingUnsupported(detail)
+        if tools_requested and _looks_like_tool_rejection(response):
+            raise _ToolsUnsupported(detail)
+        raise LLMProxyError(detail)
+
+    def _read_whole(self, response: Any, on_delta: DeltaSink) -> dict[str, Any]:
+        """A server that was asked to stream and answered in one piece.
+
+        Proxies and a few local builds accept `stream` and ignore it. That is
+        not an error and should not be treated as one — the answer is right
+        there, it just arrived all at once. The body is sniffed rather than
+        trusted to the content type alone, because a server that streams
+        without labelling it correctly is the other half of the same problem.
+        """
+        response.read()
+        if response.text.lstrip().startswith(("data:", ":")):
+            return streaming.assemble(response.text.splitlines(), on_delta=on_delta)
+        return self._body(response)
+
+    def _body(self, response: Any) -> dict[str, Any]:
         try:
             body = response.json()
             body["choices"][0]
@@ -865,6 +1048,27 @@ class OpenAICompatibleProvider:
                 f"{response.text[:400]}"
             ) from exc
         return body
+
+    def _explain_timeout(self, received: _Received) -> str:
+        """Say which kind of too-slow this was.
+
+        On a stream the timeout measures the gap between fragments, so running
+        out of it after the model has written half an answer is a different
+        failure from never hearing anything at all — the first is a model that
+        stalled, the second is usually a model still loading.
+        """
+        if received.characters:
+            return (
+                f"{self.capabilities.label} went quiet for {self._timeout}s after "
+                f"writing {received.characters} characters. The answer is lost; "
+                "the model stalled part-way through it."
+            )
+        return (
+            f"{self.capabilities.label} did not respond within {self._timeout}s. "
+            "A local model on modest hardware can take minutes, especially a "
+            "reasoning model — raise \"How long to wait\" in Models, or set "
+            "CWAP_LLM_TIMEOUT for the whole deployment."
+        )
 
     def _explain_error(self, response: Any) -> str:
         """Turn a backend's error into something a workflow author can act on."""
@@ -1109,6 +1313,71 @@ class _ReasoningUnsupported(LLMProxyError):
     Internal: it drops the reasoning parameter and retries, rather than
     surfacing to the caller.
     """
+
+
+class _StreamingUnsupported(LLMProxyError):
+    """The server will not stream. Internal: drop `stream` and retry."""
+
+
+class _UsageUnsupported(LLMProxyError):
+    """The server streams but will not be asked for token counts while doing it.
+
+    Internal, and the least costly of the three downgrades: the answer still
+    arrives live, and only the token totals for that call are lost.
+    """
+
+
+#: The optional request parameters a server may refuse one at a time. Only the
+#: count matters — it bounds how many times `_send` may downgrade and retry.
+_OPTIONAL_PARAMETERS = ("reasoning", "stream", "stream_options")
+
+
+def _without(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    return {name: value for name, value in payload.items() if name != key}
+
+
+def _is_event_stream(response: Any) -> bool:
+    """Whether the server is actually sending server-sent events."""
+    content_type = ""
+    with suppress(Exception):
+        content_type = str(response.headers.get("content-type") or "")
+    return "event-stream" in content_type.lower()
+
+
+def _reasoning_only(on_delta: DeltaSink | None) -> DeltaSink | None:
+    """A sink that forwards thinking and swallows the answer.
+
+    Used by the prompted tool protocol, where the answer may turn out to be a
+    JSON call rather than something a person should be shown mid-flight.
+    """
+    if on_delta is None:
+        return None
+
+    def sink(kind: str, text: str) -> None:
+        if kind == "reasoning":
+            on_delta(kind, text)
+
+    return sink
+
+
+class _Received:
+    """How much of an answer arrived before something went wrong.
+
+    Only exists so a timeout can tell "the model stalled half-way through
+    writing" from "the model never said anything", which are different problems
+    with different fixes.
+    """
+
+    def __init__(self) -> None:
+        self.characters = 0
+
+    def watching(self, on_delta: DeltaSink | None) -> DeltaSink:
+        def sink(kind: str, text: str) -> None:
+            self.characters += len(text)
+            if on_delta is not None:
+                on_delta(kind, text)
+
+        return sink
 
 
 def _anthropic_thinking(response: Any) -> str:

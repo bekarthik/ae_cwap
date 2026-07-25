@@ -64,14 +64,14 @@ class ScriptedProvider:
         self.systems: list[str] = []
         self.prompts: list[str] = []
 
-    def complete(self, prompt, *, system=None, options=None):
+    def complete(self, prompt, *, system=None, options=None, on_delta=None):
         self.prompts.append(prompt)
         self.systems.append(system or "")
         if self._fail:
             raise LLMProxyError("no model configured")
         return LLMCompletion(text=self._text, model="scripted-model")
 
-    def converse(self, messages, *, system=None, tools=None, options=None):
+    def converse(self, messages, *, system=None, tools=None, options=None, on_delta=None):
         return self.complete("")
 
 

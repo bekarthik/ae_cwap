@@ -242,6 +242,49 @@ skill the model had already decided against.
 
 ---
 
+## Streaming
+
+Every answer is read as it is produced. The visible half is that text appears in
+the run panel while the model is writing it; the half that decides whether runs
+survive is the timeout.
+
+| | Blocking read | Streamed read |
+| --- | --- | --- |
+| What the timeout measures | the whole generation | the gap between fragments |
+| A model producing a token a second for nine minutes | killed at the limit | runs to completion |
+| A model that wedges after one word | waits out the full timeout | fails in seconds |
+
+That is why `CWAP_LLM_STREAM=off` is for a proxy that mangles server-sent
+events, not for tuning: turning it off makes the deadline a ceiling on how long
+an answer may take, which is what made a 120-second limit fail working runs.
+
+`services/llm_proxy/streaming.py` **reassembles the stream into the body a
+non-streaming call would have returned**. Tool-call parsing, reasoning
+extraction, truncation reporting and the prompted protocol all keep reading
+`body["choices"][0]["message"]` and cannot tell the difference — streaming is a
+property of the transport, not a second path through the provider.
+
+Three details worth knowing:
+
+- **Tool calls are reassembled before dispatch.** A native call arrives as a
+  name in one frame and its arguments a few characters at a time across many.
+  Acting on a fragment would invoke a skill with half its arguments.
+- **Token counts need asking for.** `stream_options: {include_usage: true}` goes
+  out with every streamed request; a server that refuses *that* parameter keeps
+  the live answer and loses only its own token totals for that call, because the
+  two are downgraded independently.
+- **A server that ignores `stream` is not an error.** Some proxies accept the
+  flag and answer in one piece; the body is read as the ordinary response it is.
+  The reverse — streaming without the right content type — is sniffed too.
+
+What reaches the browser is coalesced, not raw: `llm_proxy/live.py` buffers
+fragments and pushes about three times a second, and those events are published
+with `LogBus.transient` — fanned out and relayed, never written to `run_logs`.
+A row per fragment would multiply the run report by a thousand to store text the
+step already holds in one piece.
+
+---
+
 ## Capabilities, and why the canvas changes shape
 
 Backends do not accept the same knobs, and the differences are not cosmetic:

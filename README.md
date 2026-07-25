@@ -177,6 +177,7 @@ list. The ones that matter:
 | `CWAP_LLM_PROVIDER` | `stub` | `ollama`, `vllm`, `together`, `anthropic`, … |
 | `CWAP_LLM_TOOL_MODE` | `auto` | `native` or `prompted` to force one tool path |
 | `CWAP_LLM_THINKING_MODE` | `auto` | `off` to stop engaging reasoning models' thinking |
+| `CWAP_LLM_STREAM` | `auto` | `off` only for a proxy that mangles server-sent events |
 | `CWAP_JWT_SECRET` | a known dev string | **required** in any deployment |
 | `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node or an unlisted MCP server may reach |
 | `CWAP_MCP_DIRECTORY` | `true` — the built-in server list is connectable | `off` to require the allow-list for every host |
@@ -265,6 +266,11 @@ first agent turn sends `tools`; a rejection that names them downgrades that
 provider permanently to a **prompted JSON protocol** and retries immediately,
 rather than failing the turn. Agents therefore work on every backend, and the
 canvas says which path a step is on rather than implying they are equivalent.
+
+Answers are **streamed**: text appears in the run panel as the model writes it,
+and — the part that matters more — the timeout becomes a silence detector rather
+than a ceiling on how long an answer may take, so a slow local model runs to
+completion while a wedged one fails in seconds.
 
 A reasoning model is asked to reason, in whichever dialect its server speaks, and
 a server that refuses the parameter costs one retried call. What it thought is

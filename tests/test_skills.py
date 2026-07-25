@@ -46,7 +46,7 @@ class ScriptedProvider:
             supports_system_prompt=True,
         )
 
-    def complete(self, prompt, *, system=None, options=None):
+    def complete(self, prompt, *, system=None, options=None, on_delta=None):
         self.prompts.append(prompt)
         self.systems.append(system or "")
         if self._fail:
@@ -54,7 +54,7 @@ class ScriptedProvider:
         text = self._texts.pop(0) if self._texts else "ok"
         return LLMCompletion(text=text, model="scripted-model")
 
-    def converse(self, messages, *, system=None, tools=None, options=None):
+    def converse(self, messages, *, system=None, tools=None, options=None, on_delta=None):
         return self.complete("\n".join(m.content for m in messages), system=system)
 
 

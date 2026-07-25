@@ -234,6 +234,15 @@ backend phrases it differently — and it is deliberately narrow on the subject,
 since mistaking a rejected API key for a missing capability would silently
 degrade every agent and hide the real problem.
 
+Every answer is read as it is produced. `streaming.py` reassembles the stream
+into the body a blocking call would have returned, so nothing above the transport
+knows the difference; what changes is that the deadline now measures the gap
+between fragments rather than the length of the answer, and that the text reaches
+the run panel while it is being written. Fragments are coalesced by `live.py` and
+published with `LogBus.transient` — fanned out and relayed, never persisted,
+because the finished text is already on the step and a row per fragment would
+bury the run report in its own tokens.
+
 Reasoning works the same way, and for the same reason: `reasoning_effort`,
 `reasoning: {effort}`, `think: true` and `chat_template_kwargs` are four spellings
 of one idea, and sending the wrong one is a 400. `reasoning.py` holds the table,

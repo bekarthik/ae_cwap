@@ -208,6 +208,16 @@ class Worker:
                 data=data or {},
             )
 
+        def stream(event: str, *, message: str = "", data=None):
+            """Live-only: watched while the run happens, never written down."""
+            log_bus.transient(
+                payload.run_id,
+                event,
+                node=payload.node_id,
+                message=message,
+                data=data or {},
+            )
+
         emit(
             "step.started",
             message=f"executing '{node.label or node.id}' ({node.type.value})",
@@ -226,6 +236,7 @@ class Worker:
                     step_execution_id=payload.step_execution_id,
                     tenant_id=payload.job_context.tenant_id,
                     emit=emit,
+                    stream=stream,
                     workflow_memory_scope=graph.memory_scope,
                     # An agent's skills get no privilege the run does not have:
                     # a write scope on the job is what permits reaching outward.

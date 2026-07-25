@@ -53,10 +53,10 @@ class ScriptedAgentProvider:
             supports_system_prompt=True,
         )
 
-    def complete(self, prompt, *, system=None, options=None):
+    def complete(self, prompt, *, system=None, options=None, on_delta=None):
         return LLMCompletion(text="completed", model="scripted-model")
 
-    def converse(self, messages, *, system=None, tools=None, options=None):
+    def converse(self, messages, *, system=None, tools=None, options=None, on_delta=None):
         self.conversations.append(list(messages))
         self.systems.append(system or "")
         self.tools_offered.append([tool["name"] for tool in (tools or [])])
@@ -92,10 +92,10 @@ class FailingProvider:
     def __init__(self, error) -> None:
         self._error = error
 
-    def complete(self, prompt, *, system=None, options=None):
+    def complete(self, prompt, *, system=None, options=None, on_delta=None):
         raise self._error
 
-    def converse(self, messages, *, system=None, tools=None, options=None):
+    def converse(self, messages, *, system=None, tools=None, options=None, on_delta=None):
         raise self._error
 
 

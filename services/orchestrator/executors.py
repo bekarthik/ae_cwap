@@ -24,6 +24,7 @@ from llm_proxy.client import (
     LLMRefusal,
     get_provider,
 )
+from llm_proxy.live import LiveText
 
 from orchestrator.variables import BindingError, RunContext, render_template, resolve
 
@@ -44,6 +45,10 @@ class ExecutionRequest:
     tenant_id: str
     #: emit(event, message=..., level=..., data=...) -> streams a LogEvent
     emit: Callable[..., None]
+    #: stream(event, message=..., data=...) -> a live-only event, never stored.
+    #: Used for model output as it is produced, which is worth watching and
+    #: worthless once the step has finished and recorded its answer.
+    stream: Callable[..., None] | None = None
     #: Memory shared by every reasoning node in this workflow.
     workflow_memory_scope: str = ""
     #: Whether this run carries a write scope. Gates skills that reach outward.
@@ -132,8 +137,11 @@ def execute_llm(request: ExecutionRequest) -> ExecutionOutcome:
         },
     )
 
+    live = _live_sink(request)
     try:
-        completion = provider.complete(prompt, system=params.get("system"), options=options)
+        completion = provider.complete(
+            prompt, system=params.get("system"), options=options, on_delta=live
+        )
     except LLMRefusal as exc:
         # A safety decline is a content outcome, not a transport failure — say so
         # plainly instead of surfacing it as an opaque provider error.
@@ -143,6 +151,9 @@ def execute_llm(request: ExecutionRequest) -> ExecutionOutcome:
         ) from exc
     except LLMProxyError as exc:
         raise NodeExecutionError(f"node '{request.node.id}' could not reach the model: {exc}") from exc
+    finally:
+        if live is not None:
+            live.flush()
 
     if completion.ignored_options:
         # Say so rather than letting a run report imply a knob took effect. A
@@ -185,6 +196,27 @@ def execute_llm(request: ExecutionRequest) -> ExecutionOutcome:
             "ignored_options": list(completion.ignored_options),
         },
     )
+
+
+def _live_sink(request: ExecutionRequest):
+    """Publish this node's answer as it is written, if anyone is watching.
+
+    None when the run has no live channel, so a step executed outside the
+    orchestrator behaves exactly as it did before streaming existed.
+    """
+    if request.stream is None:
+        return None
+
+    def publish(kind: str, text: str) -> None:
+        # In `data`, not `message`: contract models strip whitespace from
+        # strings, which would join the words either side of a fragment.
+        request.stream(
+            "llm.streaming",
+            message=f"'{request.node.id}' is writing",
+            data={"node": request.node.id, "kind": kind, "text": text},
+        )
+
+    return LiveText(publish)
 
 
 def _generation_options(params: dict[str, Any]) -> GenerationOptions:
@@ -281,6 +313,7 @@ def execute_agent(request: ExecutionRequest) -> ExecutionOutcome:
                 workflow_memory_scope=request.workflow_memory_scope,
                 allow_side_effects=request.allow_side_effects,
                 emit=request.emit,
+                stream=request.stream,
             ),
         )
     except agent_runtime.AgentError as exc:

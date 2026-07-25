@@ -399,6 +399,56 @@ textarea {
   word-break: break-word;
 }
 
+/* The answer as it is being written. Set apart from the event lines because it
+   is not an event: it is one thing growing, and it disappears when the step
+   finishes and its real output lands in the report. */
+.log-live {
+  display: flex;
+  gap: 8px;
+  padding: 6px 0 2px;
+  align-items: baseline;
+}
+
+.log-live__label {
+  flex: none;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.log-live__text {
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-live--reasoning .log-live__text {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.log-live__caret {
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  margin-left: 2px;
+  vertical-align: -1px;
+  background: var(--accent);
+  animation: caret 1s steps(1) infinite;
+}
+
+@keyframes caret {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
 /* A reasoning model's thinking is context, not progress — readable in the
    stream without competing with the steps that actually did something. */
 .log-line[data-event='agent.reasoned'] .log-line__msg {

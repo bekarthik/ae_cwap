@@ -43,10 +43,10 @@ class RewordingProvider:
     def __init__(self, text: str) -> None:
         self._text = text
 
-    def complete(self, prompt, *, system=None, options=None):
+    def complete(self, prompt, *, system=None, options=None, on_delta=None):
         return LLMCompletion(text=self._text, model="scripted-model")
 
-    def converse(self, messages, *, system=None, tools=None, options=None):
+    def converse(self, messages, *, system=None, tools=None, options=None, on_delta=None):
         return self.complete("")
 
 

@@ -30,6 +30,7 @@ import {
 import type {
   AgentDefinition,
   KnowledgeSummary,
+  LiveOutput,
   LogEvent,
   NodeType,
   RunReport,
@@ -129,6 +130,10 @@ function BuilderInner({ session, onSignOut }: Props) {
 
   const [runStatus, setRunStatus] = useState<RunStatus | null>(null);
   const [logs, setLogs] = useState<LogEvent[]>([]);
+  // What the model is writing right now. Held apart from `logs` because these
+  // events are never persisted: they are a live view of a step in progress, and
+  // the finished text arrives on the step itself a moment later.
+  const [live, setLive] = useState<LiveOutput | null>(null);
   const [report, setReport] = useState<RunReport | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
@@ -351,6 +356,7 @@ function BuilderInner({ session, onSignOut }: Props) {
       setSelectedEdgeId(null);
       setReport(null);
       setLogs([]);
+      setLive(null);
       setRunStatus(null);
     },
     [setEdges, setNodes],
@@ -422,13 +428,31 @@ function BuilderInner({ session, onSignOut }: Props) {
       const event = JSON.parse(message.data as string) as LogEvent & { event: string };
       if (event.event === 'keepalive') return;
 
+      // A fragment of the answer being written. Appended to the live view
+      // rather than to the log, which would otherwise be thousands of lines of
+      // a single sentence arriving a few words at a time.
+      if (event.data?.transient) {
+        const kind = (event.data?.kind as string) ?? 'content';
+        const fragment = (event.data?.text as string) ?? '';
+        setLive((current) =>
+          current && current.node === event.node && current.kind === kind
+            ? { ...current, text: current.text + fragment }
+            : { node: event.node ?? null, kind, text: fragment },
+        );
+        return;
+      }
+
       setLogs((current) => [...current, event]);
 
       if (event.event === 'step.started' && event.node) {
         setRunStatus('RUNNING');
         setRunState(event.node, 'running');
+        setLive(null);
       } else if (event.event === 'step.completed' && event.node) {
         setRunState(event.node, 'done');
+        // The step's real output is now in the report; the preview has served
+        // its purpose and would only be a stale duplicate of it.
+        setLive(null);
       } else if (event.event === 'run.failed') {
         if (event.node) setRunState(event.node, 'error');
         setRunStatus('FAILED');
@@ -617,7 +641,13 @@ function BuilderInner({ session, onSignOut }: Props) {
             onDeleteNode={deleteNode}
             onDeleteEdge={deleteEdge}
           />
-          <RunPanel status={runStatus} logs={logs} report={report} error={runError} />
+          <RunPanel
+            status={runStatus}
+            logs={logs}
+            live={live}
+            report={report}
+            error={runError}
+          />
         </aside>
       </div>
 

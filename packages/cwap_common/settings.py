@@ -91,6 +91,11 @@ class Settings:
     # "auto" engages a thinking-capable model's reasoning mode and permanently
     # stops asking if the server rejects the parameter. "off" never asks.
     llm_thinking_mode: str = field(default_factory=lambda: _env("CWAP_LLM_THINKING_MODE", "auto"))
+    # "auto" reads every answer as it is produced; "off" waits for the whole
+    # response. Streaming is what makes the timeout a silence detector rather
+    # than a ceiling on how long an answer may take, so "off" is for a proxy
+    # that mangles server-sent events, not a performance choice.
+    llm_stream_mode: str = field(default_factory=lambda: _env("CWAP_LLM_STREAM", "auto"))
     # Reasoning depth. Honoured by Claude and by every thinking-capable model
     # whose server takes a depth parameter; reported as ignored elsewhere.
     llm_effort: str = field(default_factory=lambda: _env("CWAP_LLM_EFFORT", "high"))

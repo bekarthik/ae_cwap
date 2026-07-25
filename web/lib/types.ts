@@ -186,6 +186,14 @@ export interface MCPServerRecord {
 }
 
 /** What this deployment permits connecting to. */
+/** Model output as it is being produced. Never persisted; see `LogBus.transient`. */
+export interface LiveOutput {
+  node: string | null;
+  /** "content" for the answer, "reasoning" for a thinking model's working. */
+  kind: string;
+  text: string;
+}
+
 export interface MCPPolicy {
   stdio_enabled: boolean;
   allowed_commands: string[];

@@ -152,7 +152,10 @@ def token_budget(requested: int) -> int:
 #: reason: every backend phrases it differently and an exact-sentence list would
 #: need an entry per server and still miss the next one.
 _SUBJECTS = ("reasoning", "think", "chat_template_kwargs", "enable_thinking")
-_NEGATIONS = (
+
+#: The "it refused the parameter" half of the match, shared with `streaming`,
+#: which needs exactly the same vocabulary for exactly the same reason.
+NEGATIONS = (
     "not support",
     "unsupported",
     "not supported",
@@ -174,4 +177,4 @@ def looks_rejected(body: str) -> bool:
     lowered = (body or "").lower()
     if not any(subject in lowered for subject in _SUBJECTS):
         return False
-    return any(negation in lowered for negation in _NEGATIONS)
+    return any(negation in lowered for negation in NEGATIONS)

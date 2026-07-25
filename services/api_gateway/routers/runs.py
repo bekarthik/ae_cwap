@@ -196,9 +196,13 @@ async def stream_logs(
                 await websocket.send_json({"event": "keepalive", "run_id": run_id})
                 continue
 
-            if event.seq <= last_seq:
-                continue  # already delivered during replay
-            last_seq = event.seq
+            # A live-only event reuses the current sequence number rather than
+            # consuming one, so the replay filter has to let it past — it can
+            # never be a duplicate of history, because it is never in history.
+            if not event.data.get("transient"):
+                if event.seq <= last_seq:
+                    continue  # already delivered during replay
+                last_seq = event.seq
             await websocket.send_json(event.model_dump(mode="json"))
             if event.event in {"run.succeeded", "run.failed"}:
                 await websocket.close(code=1000, reason="run finished")

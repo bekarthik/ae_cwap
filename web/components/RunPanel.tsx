@@ -2,11 +2,13 @@
 
 import { useEffect, useRef } from 'react';
 
-import type { LogEvent, RunReport, RunStatus } from '@/lib/types';
+import type { LiveOutput, LogEvent, RunReport, RunStatus } from '@/lib/types';
 
 interface Props {
   status: RunStatus | null;
   logs: LogEvent[];
+  /** The answer being written right now, if a step is mid-flight. */
+  live: LiveOutput | null;
   report: RunReport | null;
   error: string | null;
 }
@@ -15,13 +17,14 @@ interface Props {
  * Epic 4's outcome in the UI: a trace the user can read to understand *why* the
  * workflow produced what it did — every step, its output, and the errors.
  */
-export function RunPanel({ status, logs, report, error }: Props) {
+export function RunPanel({ status, logs, live, report, error }: Props) {
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Follow the tail as events stream in.
+    // Follow the tail as events stream in — including the answer being typed,
+    // which is the thing worth watching while a slow model works.
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [logs.length]);
+  }, [logs.length, live?.text]);
 
   if (!status && !error) {
     return (
@@ -76,7 +79,20 @@ export function RunPanel({ status, logs, report, error }: Props) {
             </span>
           </div>
         ))}
-        {logs.length === 0 ? <p className="muted small">Waiting for events…</p> : null}
+        {live ? (
+          <div className={`log-live log-live--${live.kind}`}>
+            <span className="log-live__label">
+              {live.kind === 'reasoning' ? 'thinking' : 'writing'}
+            </span>
+            <span className="log-live__text">
+              {live.text}
+              <span className="log-live__caret" />
+            </span>
+          </div>
+        ) : null}
+        {logs.length === 0 && !live ? (
+          <p className="muted small">Waiting for events…</p>
+        ) : null}
       </div>
 
       {report ? (
