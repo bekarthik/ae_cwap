@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from cwap_contracts.v3 import IngestRequest, RetrievalRequest
+from cwap_contracts.v4 import IngestRequest, RetrievalRequest
 from knowledge.embeddings import HashingEmbedder, cosine_similarity, tokenize
 from knowledge.service import KnowledgeError, chunk_text, delete, ingest, list_handles, retrieve
 

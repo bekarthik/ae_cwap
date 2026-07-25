@@ -465,7 +465,7 @@ class TestEmbeddingMigrationSafety:
     def test_switching_embedding_model_refuses_to_compare_old_vectors(self):
         """Cosine distance between two different embedding spaces looks
         plausible and means nothing. Refuse, and say what to do."""
-        from cwap_contracts.v3 import IngestRequest, RetrievalRequest
+        from cwap_contracts.v4 import IngestRequest, RetrievalRequest
         from knowledge.service import KnowledgeError, ingest, retrieve
 
         set_embedder(HashingEmbedder())

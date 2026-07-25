@@ -29,6 +29,18 @@ from cwap_common.secrets import decrypt, encrypt
 KIND_LLM = "llm"
 KIND_EMBEDDING = "embedding"
 
+
+def kind_for_provider(provider: str) -> str:
+    """The `kind` a per-provider credential is stored under.
+
+    An agent may run on a backend the workspace has not selected — that is the
+    point of choosing a model per agent — and that backend needs its own key.
+    Rather than a second table, each provider gets its own row in the one that
+    already exists, keyed `llm:openai` alongside the plain `llm` row that says
+    which of them the workspace runs on by default.
+    """
+    return f"{KIND_LLM}:{provider.strip().lower()}"[:32]
+
 #: Whose configuration the current thread should resolve. Empty means "use the
 #: deployment default", which is what the API process does outside a request and
 #: what every existing test does without changing a line.
@@ -75,6 +87,27 @@ def acting_for(tenant_id: str):
 
 def current_tenant() -> str:
     return _current_tenant.get()
+
+
+def credential_for(tenant_id: str, provider: str) -> StoredModelConfig | None:
+    """The credential this tenant has for one backend, wherever it was entered.
+
+    Checked in the order a person would expect: a key saved specifically for
+    this provider, then the workspace's main configuration if it happens to be
+    the same provider. Nothing else — a key entered for OpenAI must never be
+    sent to somebody else's endpoint.
+    """
+    if not tenant_id:
+        return None
+
+    specific = load(tenant_id, kind=kind_for_provider(provider))
+    if specific is not None:
+        return specific
+
+    main = load(tenant_id)
+    if main is not None and main.provider.strip().lower() == provider.strip().lower():
+        return main
+    return None
 
 
 def load(tenant_id: str, kind: str = KIND_LLM) -> StoredModelConfig | None:
@@ -126,6 +159,20 @@ def save(
             row.api_key = encrypt(api_key)
         session.flush()
         return _to_config(row)
+
+
+def list_configs(tenant_id: str) -> list[StoredModelConfig]:
+    """Every model configuration this tenant has saved, of any kind."""
+    if not tenant_id:
+        return []
+    with read_only_session() as session:
+        rows = (
+            session.query(ModelSetting)
+            .filter(ModelSetting.tenant_id == tenant_id)
+            .filter(ModelSetting.kind.like(f"{KIND_LLM}%"))
+            .all()
+        )
+        return [_to_config(row) for row in rows]
 
 
 def clear(tenant_id: str, kind: str = KIND_LLM) -> bool:

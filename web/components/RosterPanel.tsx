@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { ApiError, api } from '@/lib/api';
 import type { AgentDefinition, SkillDefinition } from '@/lib/types';
 
+import { AgentEditor } from './AgentEditor';
 import { MemoryPanel } from './MemoryPanel';
 
 interface Props {
@@ -28,6 +29,8 @@ export function RosterPanel({ agents, skills, onChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // `undefined` means the editor is closed; `null` means "new agent".
+  const [editing, setEditing] = useState<AgentDefinition | null | undefined>(undefined);
 
   async function build(event: React.FormEvent) {
     event.preventDefault();
@@ -75,7 +78,8 @@ export function RosterPanel({ agents, skills, onChanged }: Props) {
       {tab === 'agents' ? (
         agents.length === 0 ? (
           <p className="muted small">
-            None yet. Describe a goal and the system will design and staff one.
+            None yet. Describe a goal and the system will design and staff one — or
+            write one yourself.
           </p>
         ) : (
           agents.map((agent) => (
@@ -103,6 +107,19 @@ export function RosterPanel({ agents, skills, onChanged }: Props) {
                       </span>
                     ))}
                   </div>
+                  <div className="row" style={{ marginTop: 8 }}>
+                    <button className="btn small" onClick={() => setEditing(agent)}>
+                      Edit
+                    </button>
+                    <span className="muted small">
+                      {agent.model_provider
+                        ? `${agent.model_provider}${
+                            agent.model_override ? ` · ${agent.model_override}` : ''
+                          }`
+                        : 'workspace model'}
+                      {agent.thinking_effort ? ` · thinks ${agent.thinking_effort}` : ''}
+                    </span>
+                  </div>
                   <MemoryPanel
                     scope="agent"
                     scopeId={agent.id}
@@ -113,7 +130,19 @@ export function RosterPanel({ agents, skills, onChanged }: Props) {
             </div>
           ))
         )
-      ) : (
+      ) : null}
+
+      {tab === 'agents' ? (
+        <button
+          className="btn btn--block"
+          style={{ marginTop: 6 }}
+          onClick={() => setEditing(null)}
+        >
+          Write an agent yourself
+        </button>
+      ) : null}
+
+      {tab === 'skills' ? (
         <>
           {skills.map((skill) => (
             <div className="roster-item" key={skill.id}>
@@ -171,7 +200,19 @@ export function RosterPanel({ agents, skills, onChanged }: Props) {
             </button>
           </form>
         </>
-      )}
+      ) : null}
+
+      {editing !== undefined ? (
+        <AgentEditor
+          agent={editing}
+          skills={skills}
+          onClose={() => setEditing(undefined)}
+          onSaved={async () => {
+            setNotice(editing ? 'Saved.' : 'Created.');
+            await onChanged();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

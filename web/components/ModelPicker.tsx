@@ -139,17 +139,24 @@ export function ModelPicker({ onClose, onSaved }: Props) {
     }
   }
 
-  async function save() {
+  async function save(credentialOnly = false) {
     setBusy('save');
     setError(null);
     try {
       // An untouched key field means "keep the stored one", which is the only
       // sane reading when the API never gave it back.
-      await api.saveModel(provider, model, baseUrl, apiKey || null, seconds());
+      await api.saveModel(
+        provider,
+        model,
+        baseUrl,
+        apiKey || null,
+        seconds(),
+        credentialOnly,
+      );
       await load();
       setApiKey('');
       onSaved();
-      onClose();
+      if (!credentialOnly) onClose();
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not save.');
     } finally {
@@ -376,10 +383,18 @@ export function ModelPicker({ onClose, onSaved }: Props) {
                 <div className="row">
                   <button
                     className="btn btn--primary"
-                    onClick={save}
+                    onClick={() => void save()}
                     disabled={busy !== null || !provider}
                   >
                     {busy === 'save' ? 'Saving…' : 'Use this model'}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => void save(true)}
+                    disabled={busy !== null || !provider || !apiKey}
+                    title="Store the key so agents can run on this provider, without changing the workspace default"
+                  >
+                    Save the key only
                   </button>
                   {config.source === 'tenant' ? (
                     <button className="btn" onClick={revert} disabled={busy !== null}>

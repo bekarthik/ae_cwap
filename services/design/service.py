@@ -28,7 +28,7 @@ import re
 import uuid
 
 from agents import registry as agent_registry
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     AgentMemoryConfig,
     ClarifyingQuestion,
     DesignRequest,
@@ -589,7 +589,7 @@ def _resolve_skills(
 
 def _connector_skills(tenant_id: str) -> list:
     """Skills that came from a connected MCP server, for agents that need one."""
-    from cwap_contracts.v3 import SkillOrigin  # noqa: PLC0415
+    from cwap_contracts.v4 import SkillOrigin  # noqa: PLC0415
 
     return [
         skill
@@ -671,7 +671,7 @@ def _note_write_scope(
     Run is the same mistake as a template that fails on its third step: the
     prerequisite is knowable now, so it is reported now.
     """
-    from cwap_contracts.v3 import SIDE_EFFECTING_KINDS  # noqa: PLC0415
+    from cwap_contracts.v4 import SIDE_EFFECTING_KINDS  # noqa: PLC0415
 
     for agent in planned:
         writers = [
@@ -755,7 +755,7 @@ def _inferred_connector_need(agent: PlannedAgent) -> tuple[tuple[str, ...], bool
 
 def _ensure_retrieval_skill(tenant_id: str, handle: str):
     """A search capability over one corpus, created once and reused."""
-    from cwap_contracts.v3 import SkillKind, SkillParameter, SkillProposal  # noqa: PLC0415
+    from cwap_contracts.v4 import SkillKind, SkillParameter, SkillProposal  # noqa: PLC0415
 
     name = f"search_documents_{handle[-8:]}"
     existing = skill_registry.find_by_name(tenant_id, name)

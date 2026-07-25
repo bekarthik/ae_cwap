@@ -17,7 +17,7 @@ import contextlib
 
 import pytest
 from cwap_common.settings import reset_settings_cache
-from cwap_contracts.v3 import MCPServerConfig, MCPTransport
+from cwap_contracts.v4 import MCPServerConfig, MCPTransport
 from mcp_connect import directory, policy, registry
 
 # ExceptionGroup is a builtin from 3.11. On 3.10 anyio raises the backport's

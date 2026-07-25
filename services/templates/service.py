@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 
 from agents import registry as agent_registry
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     AgentMemoryConfig,
     NodeType,
     PlannedAgent,
@@ -260,7 +260,7 @@ def _notes(
 
 
 def _connector_skill_names(tenant_id: str) -> list[str]:
-    from cwap_contracts.v3 import SkillOrigin  # noqa: PLC0415
+    from cwap_contracts.v4 import SkillOrigin  # noqa: PLC0415
 
     return [
         skill.name

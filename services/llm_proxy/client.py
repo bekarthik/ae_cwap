@@ -1226,6 +1226,58 @@ def get_provider() -> LLMProvider:
     return _provider
 
 
+def provider_for_choice(provider: str, model: str = "") -> LLMProvider:
+    """The provider an *agent* asked for, rather than the workspace's.
+
+    This is what makes "a cheap model for triage, a strong one for synthesis"
+    real. The credential comes from whatever the tenant saved for that backend —
+    a key entered for one provider is never sent to another — falling back to
+    the deployment's environment when nothing is stored, which is how the
+    Anthropic key an operator already set keeps working without being re-entered
+    per workspace.
+
+    A pinned provider (`reset_provider_cache`) still wins, so a test or the dev
+    runner is never routed somewhere it did not choose.
+    """
+    if _provider is not None:
+        return _provider
+
+    name = provider.strip().lower()
+    if not name:
+        return get_provider()
+
+    stored = _stored_credential(name)
+    key = (
+        name,
+        model,
+        stored.base_url if stored else "",
+        stored.api_key if stored else "",
+        stored.timeout_seconds if stored else 0,
+    )
+    cached = _tenant_providers.get(key)
+    if cached is None:
+        cached = build_provider(
+            provider=name,
+            model=model,
+            base_url=stored.base_url if stored else "",
+            api_key=stored.api_key if stored else "",
+            timeout=stored.timeout_seconds if stored else 0,
+        )
+        _tenant_providers[key] = cached
+    return cached
+
+
+def _stored_credential(provider: str):
+    """What this tenant has saved for one backend. Same tolerance as below."""
+    try:
+        from llm_proxy.store import credential_for, current_tenant  # noqa: PLC0415
+
+        tenant = current_tenant()
+        return credential_for(tenant, provider) if tenant else None
+    except Exception:  # noqa: BLE001 - configuration must never break a model call
+        return None
+
+
 def _stored_config():
     """The current tenant's saved model choice, if any.
 

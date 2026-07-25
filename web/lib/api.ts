@@ -202,6 +202,7 @@ export const api = {
     baseUrl = '',
     apiKey: string | null = null,
     timeoutSeconds = 0,
+    credentialOnly = false,
   ) =>
     request<{ stored: unknown; active: unknown }>('/api/models', {
       method: 'PUT',
@@ -211,6 +212,7 @@ export const api = {
         base_url: baseUrl,
         api_key: apiKey,
         timeout_seconds: timeoutSeconds,
+        credential_only: credentialOnly,
       }),
     }),
 
@@ -259,6 +261,12 @@ export const api = {
   listAgents: () => request<AgentDefinition[]>('/api/agents'),
 
   getAgent: (id: string) => request<AgentDefinition>(`/api/agents/${id}`),
+
+  createAgent: (agent: Omit<AgentDefinition, 'id' | 'tenant_id' | 'version'>) =>
+    request<AgentDefinition>('/api/agents', {
+      method: 'POST',
+      body: JSON.stringify(agent),
+    }),
 
   updateAgent: (id: string, agent: Omit<AgentDefinition, 'id' | 'tenant_id' | 'version'>) =>
     request<AgentDefinition>(`/api/agents/${id}`, {

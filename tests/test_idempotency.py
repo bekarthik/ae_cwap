@@ -11,7 +11,7 @@ from cwap_common.idempotency import (
     commit_step_output,
 )
 from cwap_common.models import IdempotencyLedger, RunLog, WorkflowExecutionState
-from cwap_contracts.v3 import ExecutionState, LogEvent, ServiceName, StepOutputContext
+from cwap_contracts.v4 import ExecutionState, LogEvent, ServiceName, StepOutputContext
 
 
 def step_output(**overrides) -> StepOutputContext:

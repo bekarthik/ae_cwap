@@ -7,8 +7,10 @@ memory or be improved once and used everywhere.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from agents import registry
-from cwap_contracts.v3 import AgentDefinition, AgentMemoryConfig, MemoryScope
+from cwap_contracts.v4 import AgentDefinition, AgentMemoryConfig, MemoryScope
 from fastapi import APIRouter, Depends, HTTPException
 from memory import service as memory_service
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,7 +29,13 @@ class AgentUpsert(BaseModel):
     instructions: str = Field(default="", max_length=4000)
     skill_ids: list[str] = Field(default_factory=list, max_length=24)
     max_iterations: int = Field(default=6, ge=1, le=30)
-    model_override: str | None = None
+    #: Which backend serves this agent's model. Blank means the workspace's.
+    model_provider: str = Field(default="", max_length=64)
+    model_override: str | None = Field(default=None, max_length=256)
+    #: One of the effort levels, or blank to inherit the deployment's. Checked
+    #: here as well as on the contract so a bad value is a 422 naming the field
+    #: rather than a 500 from deep inside the registry.
+    thinking_effort: Literal["", "low", "medium", "high", "xhigh", "max"] = ""
     memory: AgentMemoryConfig = Field(default_factory=AgentMemoryConfig)
 
 

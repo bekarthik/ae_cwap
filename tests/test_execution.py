@@ -7,7 +7,7 @@ from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, User, WorkflowExecutionState
 from cwap_common.settings import get_settings, reset_settings_cache
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     NodeType,
     WorkflowEdge,
     WorkflowGraph,
@@ -309,7 +309,7 @@ class TestDesignedWorkflowsRun:
         ],
     )
     def test_a_designed_workflow_runs_end_to_end(self, authorized_user, goal):
-        from cwap_contracts.v3 import DesignRequest, IngestRequest
+        from cwap_contracts.v4 import DesignRequest, IngestRequest
         from design.service import design
         from knowledge.service import ingest
 
@@ -337,7 +337,7 @@ class TestDesignedWorkflowsRun:
     def test_every_designed_workflow_is_built_from_agents(self, authorized_user):
         """Item 3: a step in a designed workflow is an agent with a role, skills
         and memory — not a bare model call."""
-        from cwap_contracts.v3 import DesignRequest, NodeType
+        from cwap_contracts.v4 import DesignRequest, NodeType
         from design.service import design
 
         response = design(

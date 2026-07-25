@@ -10,7 +10,7 @@ tenant's memory reachable from another's.
 from __future__ import annotations
 
 import pytest
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     MemoryKind,
     MemoryScope,
     MemoryWriteRequest,

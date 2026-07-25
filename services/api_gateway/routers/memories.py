@@ -7,7 +7,7 @@ quietly shaping every future run.
 
 from __future__ import annotations
 
-from cwap_contracts.v3 import MemoryEntry, MemoryKind, MemoryScope, MemoryWriteRequest
+from cwap_contracts.v4 import MemoryEntry, MemoryKind, MemoryScope, MemoryWriteRequest
 from fastapi import APIRouter, Depends, HTTPException, Query
 from memory import service as memory_service
 from pydantic import BaseModel, ConfigDict, Field

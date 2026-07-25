@@ -17,7 +17,7 @@ Two properties matter more than the exact shape of the output:
 from __future__ import annotations
 
 import pytest
-from cwap_contracts.v3 import DesignRequest, DesignStage, NodeType, SkillOrigin
+from cwap_contracts.v4 import DesignRequest, DesignStage, NodeType, SkillOrigin
 from design import blueprints
 from design import service as design_service
 from llm_proxy.client import LLMCompletion, ProviderCapabilities, reset_provider_cache
@@ -439,7 +439,7 @@ class TestModelPlanning:
         more attempts than one that summarises, and only the plan knows which
         this is."""
         from agents import registry as agent_registry
-        from cwap_contracts.v3 import NodeType
+        from cwap_contracts.v4 import NodeType
 
         reset_provider_cache(
             RewordingProvider(
@@ -463,7 +463,7 @@ class TestModelPlanning:
     def test_an_absurd_budget_is_clamped(self):
         """Structural decisions are the model's; somebody's bill is not."""
         from agents import registry as agent_registry
-        from cwap_contracts.v3 import NodeType
+        from cwap_contracts.v4 import NodeType
 
         reset_provider_cache(
             RewordingProvider(

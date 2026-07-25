@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 from agents import registry as agent_registry
 from agents import runtime
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     MCPServerConfig,
     MCPTransport,
     SkillKind,
@@ -484,7 +484,7 @@ class TestSynthesisCannotInventAConnection:
             )
 
     def test_an_mcp_skill_still_needs_a_server_and_tool(self):
-        from cwap_contracts.v3 import SkillDefinition
+        from cwap_contracts.v4 import SkillDefinition
 
         with pytest.raises(ValidationError):
             SkillDefinition(

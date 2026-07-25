@@ -584,6 +584,19 @@ button.list-item:hover:not(:disabled) {
   background: var(--surface-2);
 }
 
+/* A chip that is also a switch — used to attach skills to an agent. */
+.chip--toggle {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.chip--toggle.is-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 /* An action that belongs inside a sentence rather than beside it. */
 .btn--link {
   background: none;

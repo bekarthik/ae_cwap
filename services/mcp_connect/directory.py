@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from cwap_common.settings import get_settings
-from cwap_contracts.v3 import MCPTransport
+from cwap_contracts.v4 import MCPTransport
 
 
 @dataclass(frozen=True)

@@ -11,7 +11,7 @@ import uuid
 
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import Agent as AgentRow
-from cwap_contracts.v3 import AgentDefinition, AgentMemoryConfig
+from cwap_contracts.v4 import AgentDefinition, AgentMemoryConfig
 
 
 class AgentNotFound(LookupError):
@@ -27,7 +27,9 @@ def create(
     instructions: str = "",
     skill_ids: list[str] | None = None,
     max_iterations: int = 6,
+    model_provider: str = "",
     model_override: str | None = None,
+    thinking_effort: str = "",
     memory: AgentMemoryConfig | None = None,
 ) -> AgentDefinition:
     agent = AgentDefinition(
@@ -39,7 +41,9 @@ def create(
         instructions=instructions,
         skill_ids=list(skill_ids or []),
         max_iterations=max_iterations,
+        model_provider=model_provider,
         model_override=model_override,
+        thinking_effort=thinking_effort,
         memory=memory or AgentMemoryConfig(),
     )
     with unit_of_work() as session:
@@ -53,7 +57,16 @@ def update(tenant_id: str, agent_id: str, **changes) -> AgentDefinition:
         if row is None:
             raise AgentNotFound(agent_id)
 
-        for key in ("name", "role", "objective", "instructions", "max_iterations", "model_override"):
+        for key in (
+            "name",
+            "role",
+            "objective",
+            "instructions",
+            "max_iterations",
+            "model_provider",
+            "model_override",
+            "thinking_effort",
+        ):
             if key in changes and changes[key] is not None:
                 setattr(row, key, changes[key])
         if changes.get("skill_ids") is not None:
@@ -109,7 +122,9 @@ def _to_row(agent: AgentDefinition) -> AgentRow:
         skill_ids=list(agent.skill_ids),
         max_iterations=agent.max_iterations,
         memory_config=agent.memory.model_dump(mode="json"),
+        model_provider=agent.model_provider,
         model_override=agent.model_override,
+        thinking_effort=agent.thinking_effort,
         version=agent.version,
     )
 
@@ -125,6 +140,8 @@ def _to_definition(row: AgentRow) -> AgentDefinition:
         skill_ids=list(row.skill_ids or []),
         max_iterations=row.max_iterations,
         memory=AgentMemoryConfig.model_validate(row.memory_config or {}),
+        model_provider=row.model_provider or "",
         model_override=row.model_override,
+        thinking_effort=row.thinking_effort or "",
         version=row.version,
     )

@@ -137,7 +137,11 @@ export interface AgentDefinition {
   skill_ids: string[];
   max_iterations: number;
   memory: AgentMemoryConfig;
+  /** Which backend serves this agent's model. Blank means the workspace's. */
+  model_provider: string;
   model_override: string | null;
+  /** Reasoning depth, for models with a thinking mode. Blank inherits. */
+  thinking_effort: string;
   version: number;
 }
 
@@ -441,6 +445,8 @@ export interface ModelConfiguration {
   allow_custom_endpoints: boolean;
   /** What a stored 0 falls back to. */
   default_timeout_seconds: number;
+  /** Provider keys this workspace holds a credential for. */
+  credentials: string[];
   providers: ProviderOption[];
 }
 

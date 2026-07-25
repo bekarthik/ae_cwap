@@ -9,7 +9,7 @@ Credentials go in and never come out — the same rule as model provider keys.
 
 from __future__ import annotations
 
-from cwap_contracts.v3 import MCPServerConfig, MCPServerRecord
+from cwap_contracts.v4 import MCPServerConfig, MCPServerRecord
 from fastapi import APIRouter, Depends, HTTPException
 from mcp_connect import directory, policy, registry
 from pydantic import BaseModel, ConfigDict, Field

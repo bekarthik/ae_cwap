@@ -274,7 +274,11 @@ class Agent(Base):
     skill_ids: Mapped[list[str]] = mapped_column(JsonCol, default=list, nullable=False)
     max_iterations: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
     memory_config: Mapped[dict[str, Any]] = mapped_column(JsonCol, default=dict, nullable=False)
+    #: Which backend serves this agent's model. Blank means the workspace's.
+    model_provider: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     model_override: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    #: Reasoning depth for a model that has a thinking mode. Blank inherits.
+    thinking_effort: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(

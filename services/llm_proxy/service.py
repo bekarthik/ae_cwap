@@ -120,14 +120,22 @@ def save_choice(
     base_url: str = "",
     api_key: str | None = None,
     timeout_seconds: int = 0,
+    credential_only: bool = False,
     updated_by: str = "",
 ) -> store.StoredModelConfig:
-    """Persist a tenant's choice and make it take effect immediately."""
+    """Persist a tenant's choice and make it take effect immediately.
+
+    `credential_only` stores the backend's key without making it the workspace
+    default, which is what an agent running on a second provider needs: the
+    workspace still answers on its chosen model, and that agent has somewhere to
+    get its credential from.
+    """
     if provider.strip().lower() not in {"stub", "anthropic"} and resolve(provider) is None:
         raise LLMConfigurationError(f"unknown provider '{provider}'")
 
     saved = store.save(
         tenant_id,
+        kind=store.kind_for_provider(provider) if credential_only else store.KIND_LLM,
         provider=provider,
         model=model,
         base_url=base_url,
@@ -139,6 +147,25 @@ def save_choice(
     # not be answered by a client built from the old one.
     reset_provider_cache(None)
     return saved
+
+
+def configured_providers(tenant_id: str) -> list[str]:
+    """Backends this tenant holds a credential for.
+
+    Used by the agent editor: a model whose provider has no key will fail at run
+    time, and saying so at edit time is the difference between a broken workflow
+    and a filled-in field.
+    """
+    found: set[str] = set()
+    for config in store.list_configs(tenant_id):
+        if config.has_key or not _needs_key(config.provider):
+            found.add(config.provider.strip().lower())
+    return sorted(found)
+
+
+def _needs_key(provider: str) -> bool:
+    preset = resolve(provider)
+    return bool(preset.requires_key) if preset is not None else provider == "anthropic"
 
 
 def clear_choice(tenant_id: str) -> bool:

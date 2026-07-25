@@ -25,7 +25,7 @@ import pytest
 from conftest import make_linear_graph
 from cwap_common.db import read_only_session
 from cwap_common.models import Run
-from cwap_contracts.v3 import NodeType
+from cwap_contracts.v4 import NodeType
 from orchestrator import executors
 from orchestrator.runner import RUN_FAILED, RUN_SUCCEEDED, Worker, start_run
 
@@ -149,7 +149,7 @@ class TestTheStreamCrossesProcesses:
         import asyncio
 
         from cwap_common.logbus import LogBus
-        from cwap_contracts.v3 import LogEvent
+        from cwap_contracts.v4 import LogEvent
 
         bus = LogBus()
 
@@ -170,7 +170,7 @@ class TestTheStreamCrossesProcesses:
 
         from cwap_common.logbus import LogBus
         from cwap_common.models import RunLog
-        from cwap_contracts.v3 import LogEvent
+        from cwap_contracts.v4 import LogEvent
 
         bus = LogBus()
 

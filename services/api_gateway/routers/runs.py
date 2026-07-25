@@ -12,7 +12,7 @@ import asyncio
 from cwap_common.db import read_only_session
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, Workflow, WorkflowExecutionState
-from cwap_contracts.v3 import NodeType, WorkflowGraph
+from cwap_contracts.v4 import NodeType, WorkflowGraph
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from orchestrator.runner import start_run
 
@@ -50,7 +50,7 @@ def _needs_write_scope(graph: WorkflowGraph, tenant_id: str) -> bool:
 
 def _agent_can_reach_outward(node, tenant_id: str) -> bool:
     from agents import registry as agent_registry  # noqa: PLC0415
-    from cwap_contracts.v3 import SIDE_EFFECTING_KINDS  # noqa: PLC0415
+    from cwap_contracts.v4 import SIDE_EFFECTING_KINDS  # noqa: PLC0415
     from skills import registry as skill_registry  # noqa: PLC0415
 
     if node.type is not NodeType.AGENT or not node.agent_id:

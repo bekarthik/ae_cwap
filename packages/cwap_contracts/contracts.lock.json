@@ -1,8 +1,10 @@
 {
   "AgentDefinition@v2": "fad97e7e16622f836b400f3afdf44a2203bab91783f0f79c8109ecae224e37e3",
+  "AgentDefinition@v4": "223b232b137f7a06e82aa373b5d330f5fbcfcff02d3a1c8c3fdea6187cec191b",
   "AgentTurn@v2": "b082d4fb0efe2c016b49b4984a20192fd4e375b5b97d65240a8acdd1cc04febc",
   "DesignRequest@v2": "1c8f634b3a42621be7950ca9d9f881c8da60cd554939a42e282458a2630ba1ef",
   "DesignResponse@v2": "2860a00f8b53f46193ebfe69a242e57addfaf42e71d9d652ad65a383e2a16ddf",
+  "DesignResponse@v4": "dda934b686c9043adef5ac7eb641ba9c078eea0305be06a9579d2c9cc66ea2e3",
   "DiagnosisResult@v1": "014bdc0fa2771af09df8cc521d94585f2b5865ccbd342969984a6a5a1ac2ee1b",
   "GoalIntakeRequest@v1": "66be3ed42a8c8bbb2aea9253796b1d492290ad0bb77e0cd8886b5279fda9e756",
   "IngestRequest@v1": "4b33ad956b823890da6f71430fc5a304b9808b5ab964d143fb1006a20c8a5312",
@@ -16,10 +18,12 @@
   "MemoryEntry@v2": "ee86dc68ff9e0bfaef0a74c35ad8565d75418c4316fe2b50952d0021c01dac3a",
   "NextStepDefinition@v1": "98757259ddeb3273fac7433b26536972c92f474bf69cf30f323debcbc9bc9aa5",
   "PermissionRequirement@v1": "6ba99efefedb2cbaab1ab8fb1a6b2d5dc2517f40a2f777aa1aa84e21dda1547d",
+  "PlannedAgent@v4": "2924c433b880d64c0fe3351b9a8071d7ecc08ea063d8f6efcae45ecee5a3530a",
   "RecallRequest@v2": "bca04429ed0bf132112aa515939fcc66979ae2bec9d947b3eb5aad5205f116f4",
   "RecallResult@v2": "4b7d1c4506c5d3a33281edced98bc3f6ee1544e511fb047fb3f554a49f436826",
   "RetrievalRequest@v1": "653d0166d4bd52b95dfbdb250a73b66014cb649d8eaa535168084e4447bb7cf8",
   "RetrievalResult@v1": "b5e8bff8490087c13188db21d4625815538e0e5d4d7850bdb3f216ce9d55e6a0",
+  "ReviewConfig@v4": "ac1b8c5a2f2dd88b3122d5cc0dc018eeff05759f5bdadb7f33c51bb1773f152a",
   "ScaffoldResponse@v1": "22a554c785d9abe77e12ac8615cb443a73107bcecd0de8554c3606b55d21f123",
   "SkillDefinition@v2": "1c82a268027c2b415dfc8c19fdde1156776fc1f7765e3d7cc18f68591557959c",
   "SkillDefinition@v3": "16ca44ede7c8958aefab0d52c144630c8affae04189370c2cd713d55d71ea763",
@@ -29,6 +33,8 @@
   "StepOutputContext@v2": "5f8b22d7fd299243152a78cd38f3b183e12f351ed7fff281ce92684218d683d7",
   "WorkflowGraph@v1": "0ef96693e5923d191aee06b81ef4d9b0f37d76c197bff2270f3c87fbd7ea55c8",
   "WorkflowGraph@v2": "b899bcac363d5187306cb9dab550009402dfab356a8c4d91e7046af574744cd0",
+  "WorkflowGraph@v4": "73a00b2bf2a68c2205b46e493389d79083eb66e89d9a4c16d15287b3a1db4047",
   "WorkflowJobPayload@v1": "142a6ac1efb0990a6c5daa9af8386319b3f7b9ec94ab47bca6514c058b221b66",
-  "WorkflowJobPayload@v2": "000ab0dff4523fa51abef9837c6851079ff88d50f16b8ea8c69bf0a9dd06a44b"
+  "WorkflowJobPayload@v2": "000ab0dff4523fa51abef9837c6851079ff88d50f16b8ea8c69bf0a9dd06a44b",
+  "WorkflowNode@v4": "e65830faad1d3d128fe40c097fba64370a7b67e8a40b14dba6bf5593b3165d99"
 }

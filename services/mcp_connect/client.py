@@ -25,7 +25,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
 
-from cwap_contracts.v3 import MCPServerConfig, MCPTool, MCPTransport
+from cwap_contracts.v4 import MCPServerConfig, MCPTool, MCPTransport
 
 from mcp_connect.policy import MCPPolicyError, assert_permitted
 

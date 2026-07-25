@@ -292,7 +292,7 @@ class TestTheReasoningIsKept:
 
 class TestTheRunReportShowsTheThinking:
     def test_an_agent_records_what_the_model_worked_through(self, patched_httpx, monkeypatch):
-        from cwap_contracts.v3 import AgentDefinition
+        from cwap_contracts.v4 import AgentDefinition
 
         patched_httpx(lambda request: answer("The answer.", reasoning_content="Weighed both."))
         monkeypatch.setattr(agent_runtime, "get_provider", thinker)
@@ -335,14 +335,14 @@ class TestWhichModelsAreRecognised:
 
 class TestTheAgentIsToldWhatItCanActuallyDo:
     def _agent(self):
-        from cwap_contracts.v3 import AgentDefinition
+        from cwap_contracts.v4 import AgentDefinition
 
         return AgentDefinition(
             id="ag_1", tenant_id="t_1", name="Analyst", role="You analyse things."
         )
 
     def test_an_agent_with_tools_is_told_to_check_rather_than_recall(self):
-        from cwap_contracts.v3 import SkillDefinition, SkillKind
+        from cwap_contracts.v4 import SkillDefinition, SkillKind
 
         skill = SkillDefinition(
             id="sk_1",

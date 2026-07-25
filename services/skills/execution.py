@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     MemoryKind,
     MemoryScope,
     MemoryWriteRequest,

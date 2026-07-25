@@ -25,7 +25,7 @@ from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import MCPServer as MCPServerRow
 from cwap_common.models import Skill as SkillRow
 from cwap_common.secrets import decrypt, encrypt
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     MCPConnectionResult,
     MCPServerConfig,
     MCPServerRecord,

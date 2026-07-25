@@ -151,9 +151,30 @@ def _register_v3() -> None:
         register(model, version="v3")
 
 
+def _register_v4() -> None:
+    """Agents pick their own model; workflows fan out; steps can be reviewed.
+
+    Three models changed shape, so three are re-registered. `WorkflowGraph` is
+    here because it contains nodes, not because the graph itself grew a field —
+    a nested change is still a change to the schema a consumer validates against.
+    """
+    from cwap_contracts import v4
+
+    for model in (
+        v4.AgentDefinition,
+        v4.DesignResponse,
+        v4.PlannedAgent,
+        v4.ReviewConfig,
+        v4.WorkflowGraph,
+        v4.WorkflowNode,
+    ):
+        register(model, version="v4")
+
+
 _register_v1()
 _register_v2()
 _register_v3()
+_register_v4()
 
 
 if __name__ == "__main__":  # pragma: no cover - maintenance entry point

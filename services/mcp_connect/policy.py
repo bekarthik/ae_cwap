@@ -24,7 +24,7 @@ import shutil
 from urllib.parse import urlparse
 
 from cwap_common.settings import get_settings
-from cwap_contracts.v3 import MCPServerConfig, MCPTransport
+from cwap_contracts.v4 import MCPServerConfig, MCPTransport
 
 
 class MCPPolicyError(RuntimeError):

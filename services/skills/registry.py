@@ -19,7 +19,7 @@ import uuid
 
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import Skill as SkillRow
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     SkillDefinition,
     SkillKind,
     SkillOrigin,

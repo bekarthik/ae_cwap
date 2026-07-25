@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 from agents import registry as agent_registry
-from cwap_contracts.v3 import DesignRequest, DesignStage, MCPServerConfig, MCPTransport, NodeType
+from cwap_contracts.v4 import DesignRequest, DesignStage, MCPServerConfig, MCPTransport, NodeType
 from design import blueprints
 from design import service as design_service
 from llm_proxy.client import (

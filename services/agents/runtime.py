@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from cwap_contracts.v3 import (
+from cwap_contracts.v4 import (
     AgentDefinition,
     AgentTurn,
     MemoryKind,
@@ -38,6 +38,7 @@ from llm_proxy.client import (
     LLMProxyError,
     LLMRefusal,
     get_provider,
+    provider_for_choice,
 )
 from llm_proxy.live import LiveText
 from memory import service as memory_service
@@ -102,7 +103,7 @@ def run_agent(
     recalled = _recall(agent, objective, context)
     system = _build_system_prompt(agent, recalled.text, skills=skills)
 
-    provider = get_provider()
+    provider = _provider_for(agent)
     messages: list[ChatMessage] = [ChatMessage(role="user", content=objective)]
 
     turns: list[AgentTurn] = []
@@ -193,6 +194,30 @@ def run_agent(
 # ---------------------------------------------------------------------------
 
 
+def _provider_for(agent: AgentDefinition):
+    """The model this agent runs on.
+
+    An agent that names one gets it; an agent that names nothing gets the
+    workspace's. That is what "mix providers freely within one workflow" means
+    in practice — a triage step on a small local model handing to a synthesis
+    step on a hosted one, in the same run.
+    """
+    if agent.model_provider or agent.model_override:
+        return provider_for_choice(agent.model_provider, agent.model_override or "")
+    return get_provider()
+
+
+def _options(agent: AgentDefinition) -> GenerationOptions:
+    """What this agent asks the model for.
+
+    Effort is per agent because that is where the decision belongs: triage wants
+    `low`, synthesis wants `high`, and one deployment-wide setting cannot be
+    both. Blank inherits the deployment's, and a backend without a reasoning
+    mode reports it as ignored rather than silently dropping it.
+    """
+    return GenerationOptions(effort=agent.thinking_effort or None, max_tokens=None)
+
+
 def _think(provider, messages, system, tools, agent, iteration, context):
     _emit(
         context,
@@ -206,7 +231,7 @@ def _think(provider, messages, system, tools, agent, iteration, context):
             messages,
             system=system,
             tools=tools or None,
-            options=GenerationOptions(effort=None, max_tokens=None),
+            options=_options(agent),
             on_delta=live,
         )
     except LLMRefusal as exc:
@@ -357,7 +382,9 @@ def _final_answer(provider, messages, system, agent, context, turns) -> str:
         )
     ]
     try:
-        return provider.converse(closing, system=system, tools=None).text
+        return provider.converse(
+            closing, system=system, tools=None, options=_options(agent)
+        ).text
     except LLMProxyError:
         # Losing the closing summary is bad; losing the whole run is worse. Hand
         # back what the agent actually said along the way.

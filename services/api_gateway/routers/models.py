@@ -43,6 +43,10 @@ class TestRequest(EndpointRequest):
 class SaveRequest(EndpointRequest):
     model: str = Field(default="", max_length=256)
     timeout_seconds: int = Field(default=0, ge=0, le=3600)
+    #: Save the credential for this provider without making it the workspace's
+    #: default. That is what lets one workflow mix backends: a key per provider,
+    #: and each agent naming the one it runs on.
+    credential_only: bool = False
     #: `null` keeps the stored key; `""` clears it. The distinction is what lets
     #: a user change model without re-entering their credential.
     api_key: str | None = Field(default=None, max_length=512)
@@ -61,6 +65,9 @@ def current_configuration(
         "source": "tenant" if stored else "deployment",
         "stored": stored.redacted() if stored else None,
         "allow_custom_endpoints": settings.allow_custom_model_endpoints,
+        # Which backends this workspace holds a key for, so an agent editor can
+        # offer the ones that will actually answer and say why the rest will not.
+        "credentials": service.configured_providers(principal.tenant_id),
         # The floor a tenant setting of 0 falls back to, so the field can show
         # what is actually in effect rather than an empty box.
         "default_timeout_seconds": settings.llm_timeout_seconds,
@@ -133,6 +140,7 @@ def save_configuration(
             base_url=request.base_url,
             api_key=request.api_key,
             timeout_seconds=request.timeout_seconds,
+            credential_only=request.credential_only,
             updated_by=principal.user_id,
         )
     except LLMConfigurationError as exc:

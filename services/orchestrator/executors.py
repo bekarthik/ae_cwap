@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from cwap_common.db import unit_of_work
 from cwap_common.idempotency import IdempotencyGate
 from cwap_common.settings import get_settings
-from cwap_contracts.v3 import LogLevel, NodeType, RetrievalRequest
+from cwap_contracts.v4 import LogLevel, NodeType, RetrievalRequest
 from knowledge.service import KnowledgeError, retrieve
 from llm_proxy.client import (
     GenerationOptions,

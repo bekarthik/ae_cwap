@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 from agents import registry as agent_registry
-from cwap_contracts.v3 import NodeType
+from cwap_contracts.v4 import NodeType
 from skills import registry as skill_registry
 from templates import service
 from templates.catalogue import all_templates
@@ -52,7 +52,7 @@ class TestPrerequisites:
         assert any("upload" in need.lower() for need in entry.requires)
 
     def test_the_requirement_disappears_once_it_is_met(self):
-        from cwap_contracts.v3 import IngestRequest
+        from cwap_contracts.v4 import IngestRequest
         from knowledge.service import ingest
 
         ingest(
@@ -141,7 +141,7 @@ class TestInstantiating:
         assert result.notes
 
     def test_a_document_template_gets_a_search_skill_when_there_are_documents(self):
-        from cwap_contracts.v3 import IngestRequest
+        from cwap_contracts.v4 import IngestRequest
         from knowledge.service import ingest
 
         ingest(IngestRequest(tenant_id=TENANT, title="Handbook", content="Some policy."))
