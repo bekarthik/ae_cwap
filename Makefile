@@ -37,8 +37,16 @@ init_db(); print('worker ready'); Worker().run_forever()"
 # ---- quality ---------------------------------------------------------------
 
 .PHONY: test
-test: ## Run the backend test suite
+test: ## Run the backend test suite (SQLite)
 	$(PY) -m pytest -q
+
+.PHONY: test-postgres
+test-postgres: ## Run the same suite against PostgreSQL (each test in its own schema)
+	@test -n "$(CWAP_TEST_DATABASE_URL)" || { \
+		echo "Set CWAP_TEST_DATABASE_URL, e.g."; \
+		echo "  make test-postgres CWAP_TEST_DATABASE_URL=postgresql+psycopg://cwap@localhost/cwap"; \
+		exit 1; }
+	CWAP_TEST_DATABASE_URL="$(CWAP_TEST_DATABASE_URL)" $(PY) -m pytest -q
 
 .PHONY: typecheck
 typecheck: ## Typecheck the frontend

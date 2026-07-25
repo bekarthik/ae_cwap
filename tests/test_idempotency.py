@@ -27,6 +27,88 @@ def step_output(**overrides) -> StepOutputContext:
     return StepOutputContext(**base)
 
 
+def log_event(**overrides) -> LogEvent:
+    base = dict(run_id="run_1", seq=1, event="step.started")
+    base.update(overrides)
+    return LogEvent(**base)
+
+
+class TestTheWriteSignalIsDialectNeutral:
+    """How "did this write?" is answered, not just what it answered here.
+
+    Found by running this suite against a real PostgreSQL. `rowcount` is the
+    obvious way to ask, works on SQLite, and is *always false* on PostgreSQL —
+    psycopg reports `-1` for an INSERT without RETURNING. Every caller then read
+    "duplicate" on a row it had just written: runs never recorded their inputs,
+    and the external-call gate declared every first attempt already in flight and
+    skipped the call. None of it was visible from SQLite.
+
+    So this asserts on the mechanism. `CWAP_TEST_DATABASE_URL` runs the whole
+    suite against PostgreSQL and catches the behaviour directly; these two keep
+    the fix from being undone in a SQLite-only run.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "invoke"),
+        [
+            ("commit_step_output", lambda session: commit_step_output(session, step_output())),
+            ("append_log", lambda session: append_log(session, log_event())),
+            (
+                "IdempotencyGate.pre_check",
+                lambda session: IdempotencyGate(session, "run_1", "se_1", "op").pre_check(),
+            ),
+        ],
+    )
+    def test_every_conflict_write_asks_via_returning(self, name, invoke):
+        """Inspects the statement the production code actually executes."""
+        recorder = _StatementRecorder()
+        invoke(recorder)
+
+        assert recorder.statements, f"{name} executed no statement"
+        compiled = str(recorder.statements[0]).upper()
+        assert "ON CONFLICT" in compiled
+        assert "RETURNING" in compiled, (
+            f"{name} decides its return value from rowcount, which is always -1 "
+            "on PostgreSQL — use RETURNING"
+        )
+
+    def test_the_write_signal_ignores_a_misleading_rowcount(self):
+        """A statement that returned no row must read as "did not write", even
+        when the driver reports a healthy-looking rowcount."""
+        from cwap_common.idempotency import _inserted
+
+        assert _inserted(_StatementRecorder(returns=None), object()) is False
+        assert _inserted(_StatementRecorder(returns=(1,)), object()) is True
+
+
+class _StatementRecorder:
+    """A session stand-in that captures statements instead of running them."""
+
+    def __init__(self, returns: object = (1,)) -> None:
+        self.statements: list[object] = []
+        self._returns = returns
+
+    def execute(self, statement, *args, **kwargs):
+        self.statements.append(statement)
+        return self
+
+    # Consumed by `_inserted`; `rowcount` is deliberately plausible-looking, so a
+    # reversion to reading it would pass here and fail on PostgreSQL — which is
+    # exactly the trap this class exists to close.
+    rowcount = 99
+
+    def first(self):
+        return self._returns
+
+    def get_bind(self):
+        from cwap_common.db import get_engine
+
+        return get_engine()
+
+    def query(self, *args, **kwargs):  # pre_check falls through to this on a miss
+        raise AssertionError("pre_check should not query after winning the claim")
+
+
 class TestStepOutputWrites:
     def test_first_write_commits(self):
         with unit_of_work() as session:

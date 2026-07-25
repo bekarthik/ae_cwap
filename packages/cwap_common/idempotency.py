@@ -44,6 +44,24 @@ def _insert_for(session: Session):
     )
 
 
+def _inserted(session: Session, stmt) -> bool:
+    """Whether an `ON CONFLICT DO NOTHING` statement actually wrote a row.
+
+    Via `RETURNING`, not `rowcount`. `rowcount` looks like the obvious answer and
+    is wrong on PostgreSQL: psycopg reports `-1` for an INSERT without RETURNING,
+    so `rowcount > 0` is *always false* there. Every caller below then reads
+    "this was a duplicate" on a row it had just successfully written — which on
+    the production database meant runs never recorded their inputs, and the
+    external-call gate treated every first attempt as already in flight and
+    skipped the call. SQLite reports rowcount correctly, so the whole class of
+    failure is invisible to a SQLite-only test suite.
+
+    RETURNING is the exact question being asked — "did this statement produce a
+    row?" — and both dialects support it (SQLite since 3.35).
+    """
+    return session.execute(stmt).first() is not None
+
+
 def commit_step_output(session: Session, output: StepOutputContext) -> bool:
     """Persist one node's result. Returns True if this call wrote the row.
 
@@ -67,8 +85,9 @@ def commit_step_output(session: Session, output: StepOutputContext) -> bool:
         .on_conflict_do_nothing(
             index_elements=["run_id", "step_execution_id", "source_service"]
         )
+        .returning(WorkflowExecutionState.id)
     )
-    return session.execute(stmt).rowcount > 0
+    return _inserted(session, stmt)
 
 
 def append_log(session: Session, event: LogEvent) -> bool:
@@ -88,8 +107,9 @@ def append_log(session: Session, event: LogEvent) -> bool:
             data=event.data,
         )
         .on_conflict_do_nothing(index_elements=["run_id", "seq"])
+        .returning(RunLog.id)
     )
-    return session.execute(stmt).rowcount > 0
+    return _inserted(session, stmt)
 
 
 @dataclass(frozen=True)
@@ -154,8 +174,9 @@ class IdempotencyGate:
             .on_conflict_do_nothing(
                 index_elements=["run_id", "step_execution_id", "operation"]
             )
+            .returning(IdempotencyLedger.id)
         )
-        won_claim = self.session.execute(stmt).rowcount > 0
+        won_claim = _inserted(self.session, stmt)
         if won_claim:
             return ClaimResult(should_execute=True)
 

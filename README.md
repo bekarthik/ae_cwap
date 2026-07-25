@@ -144,7 +144,8 @@ services/
   orchestrator/       State machine, executors, worker, Celery entry point
   llm_proxy/          The only module that talks to a model, any vendor
 web/                  Next.js canvas (React Flow)
-tests/                384 tests, no external services required
+tests/                388 tests, no external services required
+                      (and the same suite runs against PostgreSQL)
 deploy/               Container images
 docs/                 Architecture, contracts, model backends, epics
 ```
@@ -180,10 +181,16 @@ honest.
 ## Development
 
 ```bash
-make test        # backend suite
+make test        # backend suite, on SQLite
 make typecheck   # frontend
 make check       # both
 make contracts   # re-approve the contract lock after a deliberate version bump
+
+# The same suite against the database production actually uses. Worth running
+# before a release: SQLite and PostgreSQL differ in exactly the places this
+# platform leans on — ON CONFLICT reporting, JSONB, locking — and a bug that
+# only appears on Postgres is the worst kind. Each test gets its own schema.
+make test-postgres CWAP_TEST_DATABASE_URL=postgresql+psycopg://cwap@localhost/cwap
 ```
 
 ### Using a real model
@@ -278,4 +285,6 @@ Stated plainly, because each is a deliberate boundary rather than an oversight:
   paths do not rejoin. Concurrent step execution is a real feature, not a
   configuration flag, and the contract would need a join primitive.
 - **Migrations are not wired up.** `init_db()` creates tables; a deployment that
-  outlives its first schema change needs Alembic.
+  outlives its first schema change needs Alembic. Concurrent workers racing to
+  create the schema is handled (a Postgres advisory lock), but that is
+  bootstrapping, not migration.

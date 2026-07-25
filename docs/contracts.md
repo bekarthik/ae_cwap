@@ -149,6 +149,33 @@ or overwrite a finished run.
 | `test_a_redelivered_job_does_not_duplicate_state` | at the worker level |
 | `test_a_job_for_a_finished_run_is_ignored` | terminal runs stay terminal |
 
+#### The write signal has to be dialect-neutral
+
+`ON CONFLICT DO NOTHING` gives no error when it does nothing, so every caller
+above needs some way to ask "did I actually write?". The obvious answer is
+`rowcount`. It is wrong: psycopg reports `-1` for an INSERT without `RETURNING`,
+so `rowcount > 0` is **always false on PostgreSQL** — the production database.
+
+The consequences were not subtle. Each caller read "this was a duplicate" on a
+row it had just successfully written, so:
+
+* a run never recorded its effective inputs, and every designed workflow failed
+  on its second step with "no value at 'goal'";
+* every step logged a spurious `step.deduplicated` warning;
+* `pre_check` never won a claim, fell through to the existing `IN_FLIGHT` row it
+  had just inserted itself, and reported `in_flight_elsewhere` — so **no external
+  call was ever made** on PostgreSQL.
+
+SQLite reports `rowcount` correctly, so none of it was visible from the test
+suite. `RETURNING` is the exact question being asked and both dialects support
+it (SQLite since 3.35).
+
+| Proof | |
+| --- | --- |
+| `test_every_conflict_write_asks_via_returning` | inspects the statement each function actually executes |
+| `test_the_write_signal_ignores_a_misleading_rowcount` | a plausible rowcount does not override an empty result |
+| `make test-postgres` | the whole suite on PostgreSQL; 42 tests fail there without the fix |
+
 ### 3.C Transactional boundaries
 
 `cwap_common.db.unit_of_work` is the only sanctioned way to open a write
@@ -207,3 +234,21 @@ make contracts
 
 `tests/test_contracts.py` fails if the lock and the live schemas disagree, so the
 only way to change a published contract's shape is deliberately and in review.
+
+## Running the proofs on the production database
+
+SQLite is the default because it needs nothing installed and gives each test a
+private file. But the two databases differ in exactly the places this layer
+leans on — `ON CONFLICT` reporting, JSONB, locking — and every difference found
+so far has been a real bug that SQLite could not see:
+
+| Found on PostgreSQL | Was invisible on SQLite because |
+| --- | --- |
+| Concurrent `create_all` crashing a worker on `pg_type_typname_nsp_index` | SQLite has no shared catalogue to race on |
+| Every idempotent write reporting itself as a duplicate | SQLite reports `rowcount` for INSERTs; psycopg does not |
+
+```bash
+make test-postgres CWAP_TEST_DATABASE_URL=postgresql+psycopg://cwap@localhost/cwap
+```
+
+Each test runs in its own schema, dropped afterwards whether or not it passed.

@@ -1,11 +1,21 @@
 """Shared fixtures.
 
-Every test gets its own SQLite file, its own broker, and a fresh settings cache,
-so tests can run in any order and none of them can see another's state.
+Every test gets its own database, its own broker, and a fresh settings cache, so
+tests can run in any order and none of them can see another's state.
+
+SQLite is the default because it needs nothing installed and gives each test a
+private file. But SQLite and PostgreSQL are not interchangeable in the places
+that matter most here — `ON CONFLICT` reporting, JSONB, and locking all differ —
+and a bug that only appears on the production database is the worst kind. Set
+`CWAP_TEST_DATABASE_URL` to a PostgreSQL DSN and the whole suite runs against it,
+each test in its own schema:
+
+    CWAP_TEST_DATABASE_URL=postgresql+psycopg://cwap@localhost/cwap pytest
 """
 
 from __future__ import annotations
 
+import os
 import uuid
 
 import pytest
@@ -25,11 +35,43 @@ from cwap_contracts.v2 import (
 from knowledge.embeddings import HashingEmbedder, set_embedder
 from llm_proxy.client import StubProvider, reset_provider_cache
 
+#: A PostgreSQL DSN here runs the whole suite against Postgres instead of SQLite.
+POSTGRES_URL = os.environ.get("CWAP_TEST_DATABASE_URL", "")
+
+
+@pytest.fixture
+def database_url(tmp_path):
+    """A private database for one test, on whichever backend is configured.
+
+    On PostgreSQL that means a throwaway schema rather than a throwaway file —
+    same isolation, and it is dropped whether or not the test passes.
+    """
+    if not POSTGRES_URL:
+        yield f"sqlite:///{tmp_path / 'cwap-test.sqlite3'}"
+        return
+
+    from sqlalchemy import create_engine, text
+
+    schema = f"t{uuid.uuid4().hex[:16]}"
+    admin = create_engine(POSTGRES_URL)
+    with admin.begin() as connection:
+        connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+
+    separator = "&" if "?" in POSTGRES_URL else "?"
+    try:
+        # `search_path` scopes every unqualified name to this test's schema, so
+        # the platform code needs no awareness of the arrangement at all.
+        yield f"{POSTGRES_URL}{separator}options=-csearch_path%3D{schema}"
+    finally:
+        with admin.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin.dispose()
+
 
 @pytest.fixture(autouse=True)
-def isolated_platform(tmp_path, monkeypatch):
+def isolated_platform(database_url, monkeypatch):
     """Point the whole platform at throwaway infrastructure for one test."""
-    monkeypatch.setenv("CWAP_DATABASE_URL", f"sqlite:///{tmp_path / 'cwap-test.sqlite3'}")
+    monkeypatch.setenv("CWAP_DATABASE_URL", database_url)
     monkeypatch.setenv("CWAP_BROKER", "memory")
     monkeypatch.setenv("CWAP_INLINE_WORKER", "false")
     monkeypatch.setenv("CWAP_JWT_SECRET", "test-secret-not-used-anywhere-real")
@@ -39,7 +81,7 @@ def isolated_platform(tmp_path, monkeypatch):
     monkeypatch.delenv("CWAP_DEMO_PASSWORD", raising=False)
     reset_settings_cache()
 
-    db.configure(f"sqlite:///{tmp_path / 'cwap-test.sqlite3'}")
+    db.configure(database_url)
     db.init_db()
 
     set_broker(InMemoryBroker())
