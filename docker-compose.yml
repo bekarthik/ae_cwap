@@ -51,6 +51,10 @@ services:
       CWAP_EMBEDDING_MODEL: ${CWAP_EMBEDDING_MODEL:-}
       CWAP_EMBEDDING_BASE_URL: ${CWAP_EMBEDDING_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Must match the worker's: the gateway encrypts stored credentials and the
+      # worker decrypts them.
+      CWAP_SECRET_KEY: ${CWAP_SECRET_KEY:-}
+      CWAP_MCP_ALLOWED_COMMANDS: ${CWAP_MCP_ALLOWED_COMMANDS:-}
     ports: ['8000:8000']
     command: uvicorn api_gateway.app:app --host 0.0.0.0 --port 8000
 
@@ -74,10 +78,11 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Hosts an HTTP node is permitted to reach. Empty means no outbound calls.
       CWAP_HTTP_ALLOWLIST: ${CWAP_HTTP_ALLOWLIST:-}
-    command: >
-      python -c "from cwap_common.db import init_db;
-      from orchestrator.runner import Worker;
-      init_db(); Worker().run_forever()"
+      # Encrypts credentials a tenant stores — provider keys, MCP headers. The
+      # gateway writes them and the worker reads them, so both need the same one.
+      CWAP_SECRET_KEY: ${CWAP_SECRET_KEY:-}
+      CWAP_MCP_ALLOWED_COMMANDS: ${CWAP_MCP_ALLOWED_COMMANDS:-}
+    command: python -m orchestrator.worker
     deploy:
       replicas: 2 # proves the point: state is idempotent, so workers are fungible
 

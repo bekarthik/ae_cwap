@@ -13,6 +13,7 @@ last consistent state.
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -43,6 +44,8 @@ from orchestrator.state_machine import (
     result_state_for,
 )
 from orchestrator.variables import BindingError, RunContext, resolve_bindings
+
+logger = logging.getLogger("cwap.worker")
 
 RUN_PENDING = "PENDING"
 RUN_RUNNING = "RUNNING"
@@ -128,7 +131,15 @@ class Worker:
 
     def run_forever(self, *, poll_timeout: float = 1.0) -> None:  # pragma: no cover - daemon
         while True:
-            self.poll(timeout=poll_timeout)
+            try:
+                self.poll(timeout=poll_timeout)
+            except Exception:
+                # A worker must not die. `process` already turns a failing step
+                # into a failed run, so reaching here means something outside a
+                # step went wrong — a broker hiccup, a database blip. Losing the
+                # loop over it would take every queued run down with it, and the
+                # runs would sit at PENDING with nothing to explain why.
+                logger.exception("worker loop iteration failed; continuing")
 
     def poll(self, *, timeout: float = 0.0) -> bool:
         """Handle at most one message. Returns True if a job was executed."""
@@ -224,6 +235,15 @@ class Worker:
         except (NodeExecutionError, BindingError) as exc:
             self._fail(payload, str(exc))
             return
+        except Exception as exc:  # noqa: BLE001 - deliberately the last resort
+            # Anything a node executor did not anticipate: a provider client
+            # raising something new, a shape nobody expected. It used to
+            # propagate, kill the standalone worker's loop, and leave the run at
+            # PENDING forever — the one outcome a user cannot act on. A run that
+            # will never finish has to say so, and name what happened.
+            logger.exception("unexpected failure executing %s", node.id)
+            self._fail(payload, f"{type(exc).__name__}: {exc}")
+            return
 
         duration_ms = int((time.perf_counter() - started) * 1000)
         step_output = StepOutputContext(
@@ -294,6 +314,12 @@ class Worker:
             )
         except (NodeExecutionError, BindingError) as exc:
             self._fail(payload, str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - deliberately the last resort
+            # Planning has the same obligation as execution: a run that cannot
+            # continue must be told so rather than left at PENDING.
+            logger.exception("unexpected failure planning after %s", payload.node_id)
+            self._fail(payload, f"could not plan the next step — {type(exc).__name__}: {exc}")
             return
 
         # Persist any decision nodes resolved during planning, so the run report

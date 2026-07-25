@@ -276,6 +276,43 @@ Environment configuration remains the deployment default and the fallback, and
 the store is failure-tolerant — a model call must still work before the schema
 exists and in a process with no database.
 
+### A run must never look stuck
+
+Three separate things conspired to make a finished run display as PENDING, and
+each hid the others:
+
+* The worker caught two exception types and let everything else propagate, which
+  killed the standalone worker's loop and left a run nothing would ever finish.
+  Any unanticipated failure now fails the *run*, with the reason, and the loop
+  survives to take the next job.
+* The log bus fanned out in-process, and `docker-compose` runs the worker as its
+  own container — so the live feed reached nobody in the topology we ship. A
+  Redis deployment now relays events over pub/sub, using the broker it already
+  has. The relay never re-persists: the emitting process already did.
+* The canvas derived status from the stream alone. It now polls the run report
+  as well, so a delivery problem costs the live tail and nothing else.
+
+The last is the important one. The stream is how a run *feels* live; the run
+report is how the canvas *knows* what happened, and it is always reachable.
+
+### Design falls back to a proposal when no blueprint fits
+
+`classify_with_confidence` reports how strongly a goal matched. A single keyword
+in a forty-word brief is a coincidence, not a reading — it is how a request to
+build a software organisation became "research, then write it up".
+
+On a weak match the model is asked to propose a team, validated against the same
+contracts: an agent count within the ceiling, no duplicate names, objectives that
+reference the bindings they will actually receive, and skills that are either
+found or synthesised. Any failure falls back to the blueprint, so a goal the
+model cannot plan for still produces a working workflow. The response says when a
+design was proposed, because that one will not be identical next time.
+
+Iteration lives inside agents rather than in the graph. A review-and-rework cycle
+is a cycle, and the graph contract rejects those; an engineer that must write,
+check and correct simply gets a larger iteration budget, which expresses the same
+thing where it can actually happen.
+
 ### A token is a claim; the database is the truth
 
 `current_principal` confirms the identity a token names still exists in the

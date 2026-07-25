@@ -31,8 +31,7 @@ web: ## Run the canvas
 
 .PHONY: worker
 worker: ## Run the execution worker as a separate process (Redis deployments)
-	$(PY) -c "from cwap_common.db import init_db; from orchestrator.runner import Worker; \
-init_db(); print('worker ready'); Worker().run_forever()"
+	$(PY) -m orchestrator.worker
 
 # ---- quality ---------------------------------------------------------------
 

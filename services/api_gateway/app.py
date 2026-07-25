@@ -18,6 +18,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from cwap_common.db import init_db
+from cwap_common.logbus import build_relay, log_bus
 from cwap_common.settings import get_settings
 from cwap_contracts import AuthorizationFailure, ContractViolation, CwapContractError
 from fastapi import FastAPI, Request
@@ -85,6 +86,11 @@ async def lifespan(app: FastAPI):
     init_db()
     bootstrap_demo_user()
 
+    # A browser watching a run holds its WebSocket to *this* process, while the
+    # events are emitted wherever the worker runs. In a Redis deployment that is
+    # another container, so without this the live feed shows nothing at all.
+    log_bus.attach_relay(build_relay())
+
     worker: InlineWorker | None = None
     if get_settings().inline_worker:
         worker = InlineWorker()
@@ -95,6 +101,7 @@ async def lifespan(app: FastAPI):
     finally:
         if worker is not None:
             worker.stop()
+        log_bus.attach_relay(None)
 
 
 def _tenant_of(request: Request) -> str:

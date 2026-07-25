@@ -157,7 +157,7 @@ services/
   orchestrator/       State machine, executors, worker, Celery entry point
   llm_proxy/          The only module that talks to a model, any vendor
 web/                  Next.js canvas (React Flow)
-tests/                507 tests, no external services required
+tests/                583 tests, no external services required
                       (and the same suite runs against PostgreSQL)
 deploy/               Container images
 docs/                 Architecture, contracts, model backends, epics
@@ -312,15 +312,16 @@ Stated plainly, because each is a deliberate boundary rather than an oversight:
 - **Uploads are plain text only.** PDF and DOCX extraction belongs in its own
   service. Binary uploads are refused with an explanation rather than indexed as
   mojibake that would quietly poison every retrieval.
-- **Workflow design is a deterministic blueprint, reworded by the model.** The
+- **Workflow design is a deterministic blueprint where one fits.** The
   model sharpens each agent's role and objective against the actual goal but does
   not choose how many agents there are or what they hand to each other. That is
   deliberate: it makes the design reviewable (the same goal and answers give the
   same shape) and portable (it works on a small local model, or the offline
   stub). It also means a goal shaped unlike anything in
-  `services/design/blueprints.py` becomes one capable generalist agent rather
-  than a guessed pipeline. The blueprints are data, so adding a shape is an
-  entry, not a rewrite.
+  `services/design/blueprints.py` is handed to the model to plan instead —
+  validated against the same contracts, with the blueprint as the fallback. That
+  design is not repeatable the way a blueprint is, and the response says so. The
+  blueprints are data, so adding a shape is an entry, not a rewrite.
 - **Reflection is mechanical, not introspective.** After a run an agent records
   which skills worked, which failed, and whether its budget was enough — things
   the runtime knows for certain. It does not ask the model to write its own

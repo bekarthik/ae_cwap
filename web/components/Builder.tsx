@@ -132,6 +132,7 @@ function BuilderInner({ session, onSignOut }: Props) {
   const [report, setReport] = useState<RunReport | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const graph = useMemo(() => toGraph(meta, nodes, edges), [meta, nodes, edges]);
   const problems = useMemo(() => describeProblems(graph), [graph]);
@@ -160,9 +161,53 @@ function BuilderInner({ session, onSignOut }: Props) {
     void refreshLists();
   }, [refreshLists]);
 
-  // Close the log stream when the builder unmounts, so a navigated-away run
-  // does not leave a socket open.
-  useEffect(() => () => socketRef.current?.close(), []);
+  // Close the log stream and stop polling when the builder unmounts, so a
+  // navigated-away run leaves nothing running.
+  useEffect(
+    () => () => {
+      socketRef.current?.close();
+      if (pollRef.current) clearInterval(pollRef.current);
+    },
+    [],
+  );
+
+  /**
+   * Ask the server what actually happened, until the run is over.
+   *
+   * The WebSocket is how a run feels live; it is not how the canvas knows what
+   * a run did. Deriving status from the stream alone means any delivery problem
+   * — a worker in another container, a proxy dropping the upgrade, a dead
+   * connection — shows a finished run as PENDING forever, which is what a user
+   * reported. The run report is the source of truth and is always reachable.
+   */
+  const watchRun = useCallback(
+    (runId: string) => {
+      if (pollRef.current) clearInterval(pollRef.current);
+
+      const check = async () => {
+        try {
+          const report = await api.getRun(runId);
+          setRunStatus(report.run.status);
+          if (report.run.status === 'SUCCEEDED' || report.run.status === 'FAILED') {
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setReport(report);
+            if (report.run.error) setRunError(report.run.error);
+            // The stream may have missed events; the persisted feed has all of
+            // them, so the panel ends up complete either way.
+            setLogs(report.logs);
+          }
+        } catch {
+          // A transient failure here is not worth surfacing — the next tick
+          // will try again, and the stream may well deliver first.
+        }
+      };
+
+      pollRef.current = setInterval(check, 2000);
+      void check();
+    },
+    [],
+  );
 
   // ---- canvas editing -------------------------------------------------
 
@@ -364,12 +409,13 @@ function BuilderInner({ session, onSignOut }: Props) {
       return;
     }
 
+    // Started before the socket, and independent of it: this is what makes a
+    // run observable even where the live feed cannot reach.
+    watchRun(runId);
+
     socketRef.current?.close();
     const socket = openLogSocket(runId);
-    if (!socket) {
-      setRunError('Not signed in.');
-      return;
-    }
+    if (!socket) return;
     socketRef.current = socket;
 
     socket.onmessage = (message) => {
@@ -399,7 +445,9 @@ function BuilderInner({ session, onSignOut }: Props) {
       }
     };
 
-    socket.onerror = () => setRunError('Lost the connection to the log stream.');
+    // Not an error the user needs to act on: polling above keeps the run
+    // observable, so a dropped stream costs the live tail and nothing else.
+    socket.onerror = () => undefined;
   }
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;

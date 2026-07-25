@@ -1,10 +1,18 @@
 """Real-time Log Streamer (Epic 4).
 
 Every action, external call payload, state change and error becomes a `LogEvent`
-that goes to two destinations at once:
+that goes to three destinations:
 
-* the `run_logs` table, so the run report is durable and replayable; and
-* any live WebSocket subscriber, so the user watches it happen.
+* the `run_logs` table, so the run report is durable and replayable;
+* any live WebSocket subscriber in *this* process; and
+* a relay, when the deployment runs the worker somewhere else.
+
+The relay is not an optimisation. In `docker-compose` the worker is its own
+container, so events are emitted in a process the browser has no connection to —
+an in-process fan-out reaches nobody, and "watch it run" silently does nothing in
+the topology we actually ship. With Redis already present as the broker, its
+pub/sub is the obvious carrier, so a deployment that has one gets a working
+stream with no extra moving part.
 
 Sequence numbers are assigned here and are monotonic per run, which is what lets
 the UI reconnect mid-run and ask for "everything after seq N" without gaps or
@@ -17,9 +25,12 @@ loop, so hand-off uses `loop.call_soon_threadsafe`.
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import threading
+from collections.abc import Callable
 from contextlib import suppress
-from typing import Any
+from typing import Any, Protocol
 
 from cwap_contracts.v2 import LogEvent, LogLevel
 from sqlalchemy import func
@@ -28,9 +39,28 @@ from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.idempotency import append_log
 from cwap_common.models import RunLog
 
+logger = logging.getLogger("cwap.logbus")
+
 #: Bound on per-run fan-out buffers, so a disconnected browser cannot grow
 #: memory without limit.
 SUBSCRIBER_BUFFER = 1000
+
+#: The Redis channel every process publishes run events to.
+RELAY_CHANNEL = "cwap.run.logs"
+
+
+class LogRelay(Protocol):
+    """Carries log events between processes.
+
+    Narrow on purpose: a deployment that replaces Redis with something else
+    implements two methods, and neither the bus nor the worker changes.
+    """
+
+    def publish(self, record: LogEvent) -> None: ...
+
+    def listen(self, deliver: Callable[[LogEvent], None]) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class LogBus:
@@ -38,6 +68,7 @@ class LogBus:
         self._lock = threading.Lock()
         self._sequences: dict[str, int] = {}
         self._subscribers: dict[str, list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]]] = {}
+        self._relay: LogRelay | None = None
 
     # ---- sequencing ----------------------------------------------------
 
@@ -81,9 +112,32 @@ class LogBus:
         return record
 
     def publish(self, record: LogEvent) -> None:
+        """Persist, fan out locally, and relay to other processes."""
         with unit_of_work() as session:
             append_log(session, record)
         self._fan_out(record)
+
+        if self._relay is not None:
+            try:
+                self._relay.publish(record)
+            except Exception:  # noqa: BLE001 - a live tail must not fail a run
+                logger.warning("could not relay a log event", exc_info=True)
+
+    def deliver(self, record: LogEvent) -> None:
+        """Hand a record from *another* process to this one's subscribers.
+
+        Deliberately does not persist: the process that emitted it already did,
+        and writing again would double every line in the run report.
+        """
+        self._fan_out(record)
+
+    def attach_relay(self, relay: LogRelay | None) -> None:
+        """Wire in a cross-process carrier, and start listening on it."""
+        if self._relay is not None:
+            self._relay.close()
+        self._relay = relay
+        if relay is not None:
+            relay.listen(self.deliver)
 
     def _fan_out(self, record: LogEvent) -> None:
         with self._lock:
@@ -187,6 +241,80 @@ def _scrub(data: dict[str, Any]) -> dict[str, Any]:
         else:
             cleaned[key] = value
     return cleaned
+
+
+class RedisLogRelay:
+    """Cross-process fan-out over Redis pub/sub.
+
+    One channel for every run rather than one per run: a gateway serves many
+    browsers watching different runs, and re-subscribing per run would mean
+    connection churn on every page load for no benefit at this volume. Each
+    process filters to the runs it actually has subscribers for.
+    """
+
+    def __init__(self, url: str) -> None:
+        import redis  # noqa: PLC0415 - optional dependency
+
+        self._client = redis.Redis.from_url(url)
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def publish(self, record: LogEvent) -> None:
+        self._client.publish(RELAY_CHANNEL, record.model_dump_json())
+
+    def listen(self, deliver: Callable[[LogEvent], None]) -> None:
+        if self._thread is not None:
+            return
+
+        pubsub = self._client.pubsub(ignore_subscribe_messages=True)
+        pubsub.subscribe(RELAY_CHANNEL)
+
+        def loop() -> None:
+            while not self._stop.is_set():
+                try:
+                    message = pubsub.get_message(timeout=1.0)
+                except Exception:  # noqa: BLE001 - a dropped tail must not crash a process
+                    logger.warning("log relay read failed; retrying", exc_info=True)
+                    self._stop.wait(1.0)
+                    continue
+                if not message:
+                    continue
+                try:
+                    deliver(LogEvent.model_validate(json.loads(message["data"])))
+                except Exception:  # noqa: BLE001 - one bad frame is not fatal
+                    logger.warning("could not decode a relayed log event", exc_info=True)
+
+        self._thread = threading.Thread(target=loop, name="cwap-log-relay", daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        self._stop.set()
+        with suppress(Exception):
+            self._client.close()
+
+
+def build_relay() -> LogRelay | None:
+    """A relay when the deployment needs one, None when it does not.
+
+    "Needs one" means the worker is a separate process, which is exactly what
+    choosing the Redis broker says. A single-process deployment already shares
+    the bus, so a relay would be pure overhead and a second failure mode.
+    """
+    from cwap_common.settings import get_settings  # noqa: PLC0415 - read at call time
+
+    settings = get_settings()
+    if settings.broker_backend.strip().lower() != "redis":
+        return None
+
+    try:
+        return RedisLogRelay(settings.redis_url)
+    except Exception:  # noqa: BLE001 - a missing tail must not stop the platform
+        logger.warning(
+            "could not start the cross-process log relay; the run report will "
+            "still be complete, but the live feed will not update",
+            exc_info=True,
+        )
+        return None
 
 
 #: Process-wide bus. Services import this rather than constructing their own,

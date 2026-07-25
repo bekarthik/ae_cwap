@@ -32,6 +32,21 @@ class AgentTemplate:
     #: Whether to hand this agent a document-search capability when the tenant
     #: has corpora. A drafting agent rarely needs one; a researcher always does.
     wants_documents: bool = False
+    #: Keywords matched against the tools of connected MCP servers. An agent that
+    #: has to touch a repository gets those tools if the tenant has connected
+    #: something that offers them, and a reported gap if not — rather than a
+    #: workflow that looks complete and cannot reach anything.
+    wants_connectors: tuple[str, ...] = ()
+    #: Whether this agent's job actually changes anything outside the platform.
+    #: False means it is offered only the tools the server marks read-only —
+    #: a reviewer that reads code has no business being able to merge it, and
+    #: handing it the ability would also make the whole workflow demand a write
+    #: scope on behalf of an agent that never writes.
+    connector_writes: bool = False
+    #: How many times this agent may act before it must answer with what it has.
+    #: The graph is acyclic, so iteration lives *here*: an implementer that has
+    #: to write, run and correct needs more attempts than one that summarises.
+    max_iterations: int = 6
 
 
 @dataclass(frozen=True)
@@ -116,7 +131,131 @@ ANALYST = AgentTemplate(
 )
 
 
+# --- software delivery ------------------------------------------------------
+#
+# The SDLC roles, as agents. Iteration lives inside them rather than as a loop in
+# the graph: the graph is acyclic by contract, and a review→rework cycle would be
+# unrepresentable. An engineer that has to write, check and correct simply gets a
+# larger budget, which is the same thing expressed where it can actually happen.
+
+SPEC_ANALYST = AgentTemplate(
+    name="Analyst",
+    role=(
+        "a business analyst who turns an idea into a specification somebody could "
+        "build from, with acceptance criteria that can actually be checked"
+    ),
+    objective=(
+        "Turn this into a specification: what it must do, what it must not do, and "
+        "how anyone would know it works. State assumptions rather than inventing "
+        "requirements.\n\nThe request:\n{goal}\n\nConstraints: {constraints}"
+    ),
+    skills=("summarise", "plan_steps"),
+    rationale="Nothing can be built or judged until 'done' is written down.",
+    wants_documents=True,
+)
+
+ARCHITECT = AgentTemplate(
+    name="Architect",
+    role=(
+        "an engineer who breaks a specification into ordered, independently "
+        "buildable pieces and names the interfaces between them"
+    ),
+    objective=(
+        "Break the specification into ordered development tasks. For each: what it "
+        "changes, what it depends on, and how it is verified. Keep them small "
+        "enough to finish and check one at a time.\n\nThe specification:\n{previous}"
+    ),
+    skills=("plan_steps",),
+    rationale="Work that is not broken down is work that cannot be checked off.",
+    wants_connectors=("repo", "file", "code", "search"),
+)
+
+ENGINEER = AgentTemplate(
+    name="Engineer",
+    role=(
+        "a software engineer who reads the existing code before changing it, writes "
+        "the smallest change that satisfies the task, and says when something does "
+        "not work rather than claiming it does"
+    ),
+    objective=(
+        "Implement the tasks. Read what already exists before writing. Work through "
+        "them in order, and report exactly what you changed and what you could not "
+        "complete.\n\nThe plan:\n{previous}\n\nThe original request:\n{goal}"
+    ),
+    skills=("draft_text",),
+    rationale=(
+        "The agent that writes the code needs the repository, not a description "
+        "of it."
+    ),
+    wants_connectors=("repo", "file", "code", "write", "edit"),
+    connector_writes=True,
+    # Read, write, re-read, correct: the loop that makes this an engineer rather
+    # than a code generator.
+    max_iterations=12,
+)
+
+CODE_REVIEWER = AgentTemplate(
+    name="Reviewer",
+    role=(
+        "a demanding code reviewer who checks the change against its acceptance "
+        "criteria and reports concrete problems, not style preferences"
+    ),
+    objective=(
+        "Review the change against the specification and its acceptance criteria. "
+        "Read the code as it now stands. Report what is actually wrong and what to "
+        "do about it; if it is sound, say so plainly.\n\nWhat was "
+        "built:\n{previous}\n\nThe original request:\n{goal}"
+    ),
+    skills=("critique",),
+    rationale="The engineer cannot see the mistakes it just made.",
+    wants_connectors=("repo", "file", "code", "search", "read"),
+    max_iterations=8,
+)
+
+INTEGRATOR = AgentTemplate(
+    name="Integrator",
+    role=(
+        "a release engineer who lands finished work through the project's own "
+        "process — a branch, a pull request, a description a human can review"
+    ),
+    objective=(
+        "Land this change. Open it for review with a description of what changed "
+        "and why. Do not merge anything the reviewer flagged as "
+        "unresolved.\n\nThe review:\n{previous}\n\nThe original request:\n{goal}"
+    ),
+    skills=("draft_text",),
+    rationale=(
+        "Getting code into the repository is its own step, and the one that needs "
+        "a connected system with permission to write."
+    ),
+    wants_connectors=("pull_request", "pr", "branch", "commit", "merge", "push", "repo"),
+    connector_writes=True,
+    max_iterations=8,
+)
+
+
 INTENTS: tuple[Intent, ...] = (
+    Intent(
+        key="build_software",
+        label="Build software",
+        keywords=(
+            "software", "code", "coding", "develop", "development", "developer",
+            "implement", "implementation", "program", "programming", "engineer",
+            "engineering", "sdlc", "repository", "repo", "github", "gitlab",
+            "pull request", "merge", "refactor", "bug", "feature", "api",
+            "application", "app", "library", "backend", "frontend", "deploy",
+            "test", "tests", "ci", "build",
+        ),
+        agents=(SPEC_ANALYST, ARCHITECT, ENGINEER, CODE_REVIEWER, INTEGRATOR),
+        default_deliverable="working code, reviewed and opened for merge",
+        deliverable_options=[
+            "Working code, opened as a pull request",
+            "A patch I can review before anything is pushed",
+            "A technical design, before any code",
+            "A prototype that runs",
+        ],
+        may_need_external=True,
+    ),
     Intent(
         key="research_and_write",
         label="Research, then write it up",
@@ -208,9 +347,27 @@ GENERALIST = Intent(
 )
 
 
+#: Below this many matched keywords, a classification is a coincidence rather
+#: than a reading. "Research our competitors" genuinely is research; a long brief
+#: that happens to contain the word "research" once is not necessarily.
+CONFIDENT_MATCHES = 2
+
+
 def classify(goal: str) -> Intent:
     """Pick the closest blueprint. Ties break on declaration order, so the same
     goal always classifies the same way."""
+    return classify_with_confidence(goal)[0]
+
+
+def classify_with_confidence(goal: str) -> tuple[Intent, bool]:
+    """The blueprint, and whether the match is strong enough to rely on.
+
+    The second value is what lets the design service ask a model to propose a
+    structure instead of forcing an ill-fitting one. A brief describing a whole
+    software organisation used to classify as "research, then write it up" on the
+    strength of one word, and produce three agents that would write an email
+    about it.
+    """
     best, best_score = GENERALIST, 0
 
     for intent in INTENTS:
@@ -218,7 +375,7 @@ def classify(goal: str) -> Intent:
         if score > best_score:
             best, best_score = intent, score
 
-    return best
+    return best, best_score >= CONFIDENT_MATCHES
 
 
 def _mentions(goal: str, keyword: str) -> bool:
