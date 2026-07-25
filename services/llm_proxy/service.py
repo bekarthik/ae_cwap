@@ -63,6 +63,7 @@ def test_connection(
     model: str = "",
     base_url: str = "",
     api_key: str = "",
+    timeout_seconds: int = 0,
     tenant_id: str = "",
 ) -> ConnectionTest:
     """Exercise a configuration with a real completion.
@@ -80,6 +81,7 @@ def test_connection(
             model=model,
             base_url=base_url,
             api_key=_key_for(tenant_id, provider, api_key),
+            timeout=timeout_seconds,
         )
         completion = client.complete(
             "Reply with the single word: ready.",
@@ -117,6 +119,7 @@ def save_choice(
     model: str = "",
     base_url: str = "",
     api_key: str | None = None,
+    timeout_seconds: int = 0,
     updated_by: str = "",
 ) -> store.StoredModelConfig:
     """Persist a tenant's choice and make it take effect immediately."""
@@ -129,6 +132,7 @@ def save_choice(
         model=model,
         base_url=base_url,
         api_key=api_key,
+        timeout_seconds=timeout_seconds,
         updated_by=updated_by,
     )
     # Providers are cached per configuration; a save that changed the model must

@@ -35,6 +35,9 @@ export function ModelPicker({ onClose, onSaved }: Props) {
   const [model, setModel] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
+  // Blank means "use the deployment default", which is what the placeholder
+  // shows. Kept as text so the field can be empty rather than showing a 0.
+  const [wait, setWait] = useState('');
 
   const [detected, setDetected] = useState<DetectedModel[] | null>(null);
   const [detectError, setDetectError] = useState<string | null>(null);
@@ -62,6 +65,8 @@ export function ModelPicker({ onClose, onSaved }: Props) {
           : (loaded.providers[0]?.default_model ?? ''),
       );
       setBaseUrl(known ? (loaded.stored?.base_url ?? '') : '');
+      const stored = known ? (loaded.stored?.timeout_seconds ?? 0) : 0;
+      setWait(stored > 0 ? String(stored) : '');
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not load model settings.');
     }
@@ -81,6 +86,12 @@ export function ModelPicker({ onClose, onSaved }: Props) {
     if (detected) return detected;
     return (selected?.models ?? []).map((card) => ({ ...card, known: true }));
   }, [detected, selected]);
+
+  /** The timeout to send: a number the user typed, or 0 for "the default". */
+  function seconds(): number {
+    const parsed = Number.parseInt(wait, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  }
 
   function choose(key: string) {
     const next = config?.providers.find((entry) => entry.key === key) ?? null;
@@ -117,7 +128,7 @@ export function ModelPicker({ onClose, onSaved }: Props) {
     setBusy('test');
     setTest(null);
     try {
-      setTest(await api.testModel(provider, model, baseUrl, apiKey));
+      setTest(await api.testModel(provider, model, baseUrl, apiKey, seconds()));
     } catch (caught) {
       setTest({
         ok: false,
@@ -134,7 +145,7 @@ export function ModelPicker({ onClose, onSaved }: Props) {
     try {
       // An untouched key field means "keep the stored one", which is the only
       // sane reading when the API never gave it back.
-      await api.saveModel(provider, model, baseUrl, apiKey || null);
+      await api.saveModel(provider, model, baseUrl, apiKey || null, seconds());
       await load();
       setApiKey('');
       onSaved();
@@ -276,6 +287,25 @@ export function ModelPicker({ onClose, onSaved }: Props) {
                   />
                   <div className="hint">
                     Stored encrypted and never sent back to the browser.
+                  </div>
+                </div>
+
+                <div className="field">
+                  <label htmlFor="model-timeout">How long to wait for a reply</label>
+                  <input
+                    id="model-timeout"
+                    inputMode="numeric"
+                    value={wait}
+                    placeholder={`${config.default_timeout_seconds} seconds (default)`}
+                    onChange={(event) =>
+                      setWait(event.target.value.replace(/[^0-9]/g, ''))
+                    }
+                  />
+                  <div className="hint">
+                    Seconds. A model running on your own machine can take minutes to
+                    answer — a reasoning model thinks before it says anything — and a
+                    run fails if the wait runs out. Raise it here rather than
+                    restarting the server.
                   </div>
                 </div>
 

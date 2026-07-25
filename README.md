@@ -178,7 +178,9 @@ list. The ones that matter:
 | `CWAP_LLM_TOOL_MODE` | `auto` | `native` or `prompted` to force one tool path |
 | `CWAP_LLM_THINKING_MODE` | `auto` | `off` to stop engaging reasoning models' thinking |
 | `CWAP_JWT_SECRET` | a known dev string | **required** in any deployment |
-| `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node or HTTP MCP server may reach |
+| `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node or an unlisted MCP server may reach |
+| `CWAP_MCP_DIRECTORY` | `true` — the built-in server list is connectable | `off` to require the allow-list for every host |
+| `CWAP_LLM_TIMEOUT` | `600` seconds | lower it on hosted models, or raise it in Models per workspace |
 | `CWAP_MCP_ALLOWED_COMMANDS` | empty — stdio MCP servers disabled | commands a stdio MCP server may launch |
 | `CWAP_SECRET_KEY` | falls back to the JWT secret | encrypts stored provider keys and MCP credentials |
 
@@ -279,11 +281,19 @@ Context Protocol**. Connect a server under *Connected systems*, and each tool it
 advertises becomes a skill an agent can be given — so an agent that can read a
 repository is an agent holding a skill, exactly like one that can summarise text.
 
+**Start from the list.** *Connect a system* opens on the servers the platform
+already ships the details for — GitHub, DeepWiki, Context7, Hugging Face,
+Sentry, Stripe, Cloudflare's docs, and the reference local ones — each with its
+endpoint, what it is for and which credential it will ask for. Their hosts need
+no allow-listing, because a fixed, code-reviewed list *is* an answer to "which
+hosts may this deployment reach". Everything in the form stays editable, and a
+server nobody listed is still one URL away.
+
 The two transports have very different blast radii and are gated separately:
 
 | Transport | What it is | Gate |
 | --- | --- | --- |
-| `http` | Streamable HTTP to a URL | `CWAP_HTTP_ALLOWLIST`, the same list an HTTP node uses |
+| `http` | Streamable HTTP to a URL | The built-in list, or `CWAP_HTTP_ALLOWLIST` for any other host |
 | `stdio` | The platform launches a process on the worker | `CWAP_MCP_ALLOWED_COMMANDS` — **empty by default** |
 
 stdio is off until an operator turns it on, because without that gate "connect an
@@ -292,9 +302,12 @@ matches either a bare command name resolved through `PATH`, or an exact absolute
 path — a bare entry deliberately does not authorise `/tmp/uploaded/npx`.
 
 ```bash
-# Let this deployment run npx-based MCP servers
+# Let this deployment run npx-based MCP servers, and reach a host of its own
 export CWAP_MCP_ALLOWED_COMMANDS=npx
-export CWAP_HTTP_ALLOWLIST=api.github.com
+export CWAP_HTTP_ALLOWLIST=mcp.internal.example.com
+
+# Or require the allow-list for everything, listed servers included
+export CWAP_MCP_DIRECTORY=off
 ```
 
 A tool that can change something needs the same `WRITE_EXTERNAL` scope an HTTP

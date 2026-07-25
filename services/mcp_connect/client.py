@@ -27,7 +27,7 @@ from typing import Any
 
 from cwap_contracts.v3 import MCPServerConfig, MCPTool, MCPTransport
 
-from mcp_connect.policy import assert_permitted
+from mcp_connect.policy import MCPPolicyError, assert_permitted
 
 logger = logging.getLogger("cwap.mcp")
 
@@ -39,6 +39,33 @@ CALL_TIMEOUT = 120.0
 
 class MCPError(RuntimeError):
     """A server could not be reached, or a tool call failed."""
+
+
+def explain(exc: BaseException) -> str:
+    """A message a person can act on, out of whatever the SDK raised.
+
+    The transport runs inside an anyio task group, so a refused connection
+    arrives as an ExceptionGroup whose `str()` is "unhandled errors in a
+    TaskGroup (1 sub-exception)" — accurate, and worthless to somebody who just
+    typed a URL. The leaves of the group are the actual answer: a DNS failure, a
+    401, a certificate. Nested groups are flattened, since the nesting is an
+    implementation detail of how the transport is supervised.
+    """
+    leaves: list[str] = []
+
+    def walk(error: BaseException) -> None:
+        inner = getattr(error, "exceptions", None)
+        if inner:
+            for sub in inner:
+                walk(sub)
+            return
+        text = str(error).strip() or type(error).__name__
+        if text not in leaves:
+            leaves.append(text)
+
+    walk(exc)
+    # Three is enough to see a pattern without pasting a stack into a dialog.
+    return "; ".join(leaves[:3]) or f"{type(exc).__name__}"
 
 
 class _LoopThread:
@@ -125,11 +152,11 @@ class MCPClient:
             )
         except MCPError:
             raise
-        except Exception as exc:  # noqa: BLE001 - the SDK raises a family of errors
+        except BaseException as exc:  # noqa: BLE001 - the SDK raises a family of errors
             # A dead session should not poison every later call; drop it so the
             # next invocation reconnects rather than failing the same way.
             self.disconnect(server_id)
-            raise MCPError(f"calling '{tool_name}' failed: {exc}") from exc
+            raise MCPError(f"calling '{tool_name}' failed: {explain(exc)}") from exc
 
         if getattr(result, "isError", False):
             raise MCPError(_render(result) or f"'{tool_name}' reported an error")
@@ -138,7 +165,12 @@ class MCPClient:
     def probe(self, config: MCPServerConfig, credentials: dict) -> list[MCPTool]:
         """Connect, list tools, disconnect. Used to verify a server before saving."""
         assert_permitted(config)
-        return _thread.submit(_probe(config, credentials), CONNECT_TIMEOUT)
+        try:
+            return _thread.submit(_probe(config, credentials), CONNECT_TIMEOUT)
+        except (MCPError, MCPPolicyError):
+            raise
+        except BaseException as exc:  # noqa: BLE001 - includes ExceptionGroup
+            raise MCPError(f"could not connect: {explain(exc)}") from exc
 
     def disconnect(self, server_id: str) -> None:
         with self._lock:
@@ -170,8 +202,8 @@ class MCPClient:
             entry = _thread.submit(_connect(config, credentials), CONNECT_TIMEOUT)
         except MCPError:
             raise
-        except Exception as exc:  # noqa: BLE001
-            raise MCPError(f"could not connect: {exc}") from exc
+        except BaseException as exc:  # noqa: BLE001 - includes ExceptionGroup
+            raise MCPError(f"could not connect: {explain(exc)}") from exc
 
         with self._lock:
             # Another thread may have connected while this one was waiting; keep
@@ -250,17 +282,32 @@ async def _probe(config: MCPServerConfig, credentials: dict) -> list[MCPTool]:
 async def _open_transport(stack: AsyncExitStack, config: MCPServerConfig, credentials: dict):
     if config.transport is MCPTransport.STDIO:
         from mcp import StdioServerParameters  # noqa: PLC0415
-        from mcp.client.stdio import stdio_client  # noqa: PLC0415
+        from mcp.client.stdio import (
+            get_default_environment,  # noqa: PLC0415
+            stdio_client,  # noqa: PLC0415
+        )
 
         # Credentials for a stdio server are environment values — a token the
         # server itself reads. They are merged here rather than stored in
         # `config.env`, so listing a server never discloses them.
+        #
+        # On top of the SDK's default environment, not instead of it. Passing a
+        # bare dict hands the child an environment with no PATH and no HOME,
+        # which breaks the single most common way to launch an MCP server —
+        # `npx -y <package>` — in a way that looks like a hung server rather
+        # than a missing variable. The default is a deliberate short list (PATH,
+        # HOME, SHELL, TERM), not the worker's whole environment, so nothing
+        # this process holds leaks into a server a tenant named.
         streams = await stack.enter_async_context(
             stdio_client(
                 StdioServerParameters(
                     command=config.command,
                     args=list(config.args),
-                    env={**config.env, **{k: str(v) for k, v in credentials.items()}},
+                    env={
+                        **get_default_environment(),
+                        **config.env,
+                        **{key: str(value) for key, value in credentials.items()},
+                    },
                 )
             )
         )

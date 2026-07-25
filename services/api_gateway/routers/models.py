@@ -35,10 +35,14 @@ class EndpointRequest(BaseModel):
 
 class TestRequest(EndpointRequest):
     model: str = Field(default="", max_length=256)
+    #: 0 means "use the deployment default". Bounded because a request that can
+    #: be told to wait forever is a way to pin a worker.
+    timeout_seconds: int = Field(default=0, ge=0, le=3600)
 
 
 class SaveRequest(EndpointRequest):
     model: str = Field(default="", max_length=256)
+    timeout_seconds: int = Field(default=0, ge=0, le=3600)
     #: `null` keeps the stored key; `""` clears it. The distinction is what lets
     #: a user change model without re-entering their credential.
     api_key: str | None = Field(default=None, max_length=512)
@@ -57,6 +61,9 @@ def current_configuration(
         "source": "tenant" if stored else "deployment",
         "stored": stored.redacted() if stored else None,
         "allow_custom_endpoints": settings.allow_custom_model_endpoints,
+        # The floor a tenant setting of 0 falls back to, so the field can show
+        # what is actually in effect rather than an empty box.
+        "default_timeout_seconds": settings.llm_timeout_seconds,
         "providers": [
             {
                 "key": preset.key,
@@ -107,6 +114,7 @@ def test_configuration(
         model=request.model,
         base_url=request.base_url,
         api_key=request.api_key,
+        timeout_seconds=request.timeout_seconds,
         tenant_id=principal.tenant_id,
     ).as_dict()
 
@@ -124,6 +132,7 @@ def save_configuration(
             model=request.model,
             base_url=request.base_url,
             api_key=request.api_key,
+            timeout_seconds=request.timeout_seconds,
             updated_by=principal.user_id,
         )
     except LLMConfigurationError as exc:

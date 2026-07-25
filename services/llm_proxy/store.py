@@ -41,6 +41,8 @@ class StoredModelConfig:
     model: str = ""
     base_url: str = ""
     api_key: str = ""
+    #: Seconds to wait for a reply. 0 means "use the deployment default".
+    timeout_seconds: int = 0
     updated_by: str = ""
     updated_at: datetime | None = None
 
@@ -55,6 +57,7 @@ class StoredModelConfig:
             "model": self.model,
             "base_url": self.base_url,
             "has_api_key": self.has_key,
+            "timeout_seconds": self.timeout_seconds,
             "updated_by": self.updated_by,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
@@ -95,6 +98,7 @@ def save(
     model: str = "",
     base_url: str = "",
     api_key: str | None = None,
+    timeout_seconds: int = 0,
     updated_by: str = "",
 ) -> StoredModelConfig:
     """Store a choice. `api_key=None` keeps the existing key.
@@ -116,6 +120,7 @@ def save(
         row.provider = provider
         row.model = model
         row.base_url = base_url
+        row.timeout_seconds = max(0, int(timeout_seconds or 0))
         row.updated_by = updated_by
         if api_key is not None:
             row.api_key = encrypt(api_key)
@@ -137,6 +142,7 @@ def _to_config(row: ModelSetting) -> StoredModelConfig:
         model=row.model or "",
         base_url=row.base_url or "",
         api_key=decrypt(row.api_key or ""),
+        timeout_seconds=row.timeout_seconds or 0,
         updated_by=row.updated_by or "",
         updated_at=row.updated_at,
     )

@@ -112,6 +112,9 @@ class TestPostgresLocking:
         monkeypatch.setattr(
             db.Base.metadata, "create_all", lambda bind, **_kw: created_with.append(bind)
         )
+        # The column reconciliation that follows creation needs a real engine to
+        # inspect; this test is about the lock, and has a fake one.
+        monkeypatch.setattr(db, "add_missing_columns", lambda: None)
 
         init_db()
 

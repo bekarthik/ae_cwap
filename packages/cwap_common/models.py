@@ -336,6 +336,10 @@ class ModelSetting(Base):
     model: Mapped[str] = mapped_column(String(256), default="", nullable=False)
     base_url: Mapped[str] = mapped_column(String(512), default="", nullable=False)
     api_key: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    #: How long to wait for a reply, in seconds. 0 means the deployment default.
+    #: Stored per tenant because it is a property of *their* hardware: a hosted
+    #: API answers in seconds, a 70B reasoning model on a laptop does not.
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     updated_by: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow

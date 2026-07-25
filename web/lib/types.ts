@@ -190,6 +190,38 @@ export interface MCPPolicy {
   stdio_enabled: boolean;
   allowed_commands: string[];
   allowed_hosts: string[];
+  /** Whether the built-in server list can be connected without the allow-list. */
+  directory_enabled: boolean;
+  directory_hosts: string[];
+}
+
+/** One secret a listed server will ask for, and where to get it. */
+export interface MCPCredentialField {
+  name: string;
+  label: string;
+  how: string;
+  required: boolean;
+  /** What the value is sent with — "Bearer " for a token header. */
+  prefix: string;
+}
+
+/** A server the platform ships the connection details for. */
+export interface MCPDirectoryEntry {
+  key: string;
+  label: string;
+  summary: string;
+  category: string;
+  transport: MCPTransport;
+  url: string;
+  command: string;
+  args: string[];
+  docs_url: string;
+  description: string;
+  read_only: boolean;
+  argument_hint: string;
+  available: boolean;
+  blocked_reason: string;
+  credentials: MCPCredentialField[];
 }
 
 export interface SkillParameter {
@@ -387,6 +419,8 @@ export interface StoredModelChoice {
   base_url: string;
   /** Whether a credential is saved. Never the credential itself. */
   has_api_key: boolean;
+  /** Seconds to wait for a reply. 0 means the deployment default. */
+  timeout_seconds: number;
   updated_by: string;
   updated_at: string | null;
 }
@@ -397,6 +431,8 @@ export interface ModelConfiguration {
   source: 'tenant' | 'deployment';
   stored: StoredModelChoice | null;
   allow_custom_endpoints: boolean;
+  /** What a stored 0 falls back to. */
+  default_timeout_seconds: number;
   providers: ProviderOption[];
 }
 

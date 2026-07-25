@@ -92,11 +92,21 @@ def _assert_host_permitted(url: str) -> None:
     if not host:
         raise MCPPolicyError(f"'{url}' has no host")
 
+    # A host the built-in directory names is already an answer to "which hosts
+    # may this deployment reach" — decided in a reviewed file rather than in a
+    # text box. Everything else still goes through the operator's allow-list.
+    from mcp_connect import directory  # noqa: PLC0415 - avoids an import cycle
+
+    if directory.vouches_for(host):
+        return
+
     allowed = get_settings().http_allowed_hosts
     if not allowed:
         raise MCPPolicyError(
-            "no outbound hosts are allow-listed, so this deployment cannot reach "
-            "an HTTP MCP server. Set CWAP_HTTP_ALLOWLIST."
+            f"'{host}' is not one of the servers this platform ships with, and no "
+            "outbound hosts are allow-listed on this deployment. Pick a server "
+            "from the list, or ask an administrator to add the host to "
+            "CWAP_HTTP_ALLOWLIST."
         )
     if host not in allowed and not any(host.endswith(f".{entry}") for entry in allowed):
         raise MCPPolicyError(f"host '{host}' is not in the outbound allow-list")
@@ -104,8 +114,12 @@ def _assert_host_permitted(url: str) -> None:
 
 def describe() -> dict[str, object]:
     """What this deployment permits, so the UI can say so before a user tries."""
+    from mcp_connect import directory  # noqa: PLC0415 - avoids an import cycle
+
     return {
         "stdio_enabled": bool(allowed_commands()),
         "allowed_commands": sorted(allowed_commands()),
         "allowed_hosts": sorted(get_settings().http_allowed_hosts),
+        "directory_enabled": directory.enabled(),
+        "directory_hosts": sorted(directory.hosts()),
     }

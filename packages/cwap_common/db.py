@@ -113,6 +113,7 @@ def init_db(*, attempts: int = 3) -> None:
                     Base.metadata.create_all(connection)
             else:
                 Base.metadata.create_all(engine)
+            add_missing_columns()
             return
         except (IntegrityError, OperationalError, ProgrammingError) as exc:
             if not _is_already_exists(exc):
@@ -122,6 +123,61 @@ def init_db(*, attempts: int = 3) -> None:
                 logger.info("schema already created by another process")
                 return
             logger.debug("schema creation raced with another process; retrying")
+
+
+def add_missing_columns() -> None:
+    """Give an existing database the columns a newer model declares.
+
+    `create_all` only ever creates whole tables, so a release that adds a
+    setting to an existing one leaves every database created before it broken:
+    the query names a column the table does not have. Wiping the database is not
+    an answer when it holds someone's workflows.
+
+    So the one migration that is safe to run unattended is applied here — adding
+    a column that has a default or is nullable. Nothing is renamed, retyped or
+    dropped; a change that needs any of those needs a migration tool and a human.
+    """
+    from sqlalchemy import inspect  # noqa: PLC0415 - only needed at startup
+
+    engine = get_engine()
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        present = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present or column.primary_key:
+                continue
+            if not column.nullable and column.default is None and column.server_default is None:
+                # Adding a NOT NULL column with no default to a populated table
+                # cannot succeed. Say so rather than failing every boot with a
+                # database error that does not name the cause.
+                logger.warning(
+                    "column %s.%s cannot be added automatically; it needs a migration",
+                    table.name,
+                    column.name,
+                )
+                continue
+
+            kind = column.type.compile(engine.dialect)
+            clause = f"ALTER TABLE {table.name} ADD COLUMN {column.name} {kind}"
+            if not column.nullable:
+                clause += f" NOT NULL DEFAULT {_sql_default(column)}"
+            with engine.begin() as connection:
+                connection.execute(text(clause))
+            logger.info("added missing column %s.%s", table.name, column.name)
+
+
+def _sql_default(column: Any) -> str:
+    """A literal for a column default, for the ADD COLUMN above."""
+    value = column.default.arg if column.default is not None else None
+    if callable(value):  # a Python-side factory has no SQL form
+        value = None
+    if value is None:
+        return "''" if isinstance(column.type.python_type(), str) else "0"
+    return f"'{value}'" if isinstance(value, str) else str(value)
 
 
 def configure(database_url: str, *, echo: bool = False) -> None:

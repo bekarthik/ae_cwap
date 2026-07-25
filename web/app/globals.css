@@ -528,6 +528,23 @@ textarea {
   background: var(--accent-soft);
 }
 
+/* A choice in a list of choices: hovering says "this one is clickable". */
+button.list-item:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+/* An action that belongs inside a sentence rather than beside it. */
+.btn--link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .muted {
   color: var(--text-muted);
 }
@@ -661,6 +678,12 @@ textarea {
   background: var(--success-soft);
   border-color: transparent;
   color: var(--success);
+}
+
+/* `hidden` must win over a layout rule. Without this a `display: flex`
+   container stays on screen while the markup says it is hidden. */
+[hidden] {
+  display: none !important;
 }
 
 .tabs {

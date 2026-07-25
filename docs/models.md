@@ -303,8 +303,12 @@ one per chunk. Against a local embedding server the difference is minutes.
 
 ## Practical notes for local models
 
-- **Raise the timeout.** `CWAP_LLM_TIMEOUT` defaults to 120s. A 70B model on
-  modest hardware will exceed that; the error message says so when it happens.
+- **The wait is ten minutes, and yours to change.** `CWAP_LLM_TIMEOUT` defaults
+  to 600s, because the machine on the other end is frequently somebody's laptop
+  and a reasoning model thinks for minutes before its first token. *How long to
+  wait* in the Models dialog overrides it per workspace, with no restart — the
+  same place the model itself is chosen, since it is the same decision. A
+  timeout that does fire names both.
 - **Lower `max_tokens` on nodes.** Small models are slower per token, and a
   truncated answer is flagged in the run report (`finish_reason: length`) rather
   than passed downstream as if complete.

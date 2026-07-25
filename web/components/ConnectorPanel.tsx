@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { ApiError, api } from '@/lib/api';
-import type { MCPPolicy, MCPServerRecord, MCPTransport } from '@/lib/types';
+import type {
+  MCPDirectoryEntry,
+  MCPPolicy,
+  MCPServerRecord,
+  MCPTransport,
+} from '@/lib/types';
 
 interface Props {
   onChanged: () => Promise<void> | void;
@@ -21,10 +26,16 @@ interface Props {
  * URL, which most people can supply. A stdio server launches a process on the
  * worker, so it is only offered when an administrator has allow-listed commands
  * — saying so up front beats letting someone fill in a form that will be refused.
+ *
+ * The dialog opens on the servers the platform already knows how to reach rather
+ * than on an empty URL field. "Which of these?" is answerable; "paste an MCP
+ * endpoint" is a question most people cannot answer on the spot — and the ones
+ * who can would still have hit an empty outbound allow-list.
  */
 export function ConnectorPanel({ onChanged }: Props) {
   const [servers, setServers] = useState<MCPServerRecord[]>([]);
   const [policy, setPolicy] = useState<MCPPolicy | null>(null);
+  const [known, setKnown] = useState<MCPDirectoryEntry[]>([]);
   const [adding, setAdding] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -32,9 +43,10 @@ export function ConnectorPanel({ onChanged }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const body = await api.listMcpServers();
+      const [body, listed] = await Promise.all([api.listMcpServers(), api.mcpDirectory()]);
       setServers(body.servers);
       setPolicy(body.policy);
+      setKnown(listed.servers);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not load connectors.');
     }
@@ -79,8 +91,11 @@ export function ConnectorPanel({ onChanged }: Props) {
 
       {servers.length === 0 ? (
         <p className="muted small">
-          Nothing connected. Add an MCP server and its tools become skills your
+          Nothing connected. Connect a system and its tools become skills your
           agents can use — a repository, a filesystem, an internal service.
+          {known.some((entry) => entry.available)
+            ? ` ${known.filter((entry) => entry.available).length} are ready to connect.`
+            : ''}
         </p>
       ) : (
         servers.map((server) => (
@@ -155,6 +170,7 @@ export function ConnectorPanel({ onChanged }: Props) {
       {adding && policy ? (
         <ConnectDialog
           policy={policy}
+          known={known}
           onClose={() => setAdding(false)}
           onConnected={async (message) => {
             setNotice(message);
@@ -169,16 +185,16 @@ export function ConnectorPanel({ onChanged }: Props) {
 
 function ConnectDialog({
   policy,
+  known,
   onClose,
   onConnected,
 }: {
   policy: MCPPolicy;
+  known: MCPDirectoryEntry[];
   onClose: () => void;
   onConnected: (message: string) => Promise<void> | void;
 }) {
-  const [transport, setTransport] = useState<MCPTransport>(
-    policy.stdio_enabled ? 'stdio' : 'http',
-  );
+  const [transport, setTransport] = useState<MCPTransport>('http');
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [url, setUrl] = useState('');
@@ -186,6 +202,39 @@ function ConnectDialog({
   const [args, setArgs] = useState('');
   const [secretName, setSecretName] = useState('');
   const [secretValue, setSecretValue] = useState('');
+  // The listed entry this form was filled from, so the credential can be
+  // labelled with where to get it and sent with the prefix that server wants.
+  const [chosen, setChosen] = useState<MCPDirectoryEntry | null>(null);
+  const [manual, setManual] = useState(false);
+
+  function pick(entry: MCPDirectoryEntry) {
+    setChosen(entry);
+    setManual(true);
+    setResult(null);
+    setTransport(entry.transport);
+    setName(entry.key.replace(/-/g, '_'));
+    setDescription(entry.description);
+    setUrl(entry.url);
+    setCommand(entry.command);
+    setArgs(entry.args.join(' ') + (entry.argument_hint ? ' ' : ''));
+    setSecretName(entry.credentials[0]?.name ?? '');
+    setSecretValue('');
+  }
+
+  function startBlank() {
+    setChosen(null);
+    setManual(true);
+    setTransport(policy.stdio_enabled ? 'stdio' : 'http');
+  }
+
+  /** The credential as the server wants it — "Bearer <token>", not "<token>". */
+  function secret(): Record<string, string> {
+    if (!secretName || !secretValue) return {};
+    const prefix = chosen?.credentials.find((entry) => entry.name === secretName)?.prefix ?? '';
+    const value =
+      prefix && !secretValue.startsWith(prefix) ? `${prefix}${secretValue}` : secretValue;
+    return { [secretName]: value };
+  }
 
   const [busy, setBusy] = useState<'test' | 'connect' | null>(null);
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -204,7 +253,7 @@ function ConnectDialog({
               env: {},
               url: '',
             },
-      credentials: secretName && secretValue ? { [secretName]: secretValue } : {},
+      credentials: secret(),
     };
   }
 
@@ -255,7 +304,25 @@ function ConnectDialog({
           nothing else about a workflow changes.
         </p>
 
-        <div className="tabs">
+        {!manual ? (
+          <Catalogue known={known} onPick={pick} onBlank={startBlank} />
+        ) : null}
+
+        {manual && chosen ? (
+          <div className="notice notice--info">
+            <strong>{chosen.label}</strong> — {chosen.summary}{' '}
+            <a href={chosen.docs_url} target="_blank" rel="noreferrer">
+              docs
+            </a>
+            . Everything below is editable; if the endpoint has moved, correct it
+            here.{' '}
+            <button className="btn--link" onClick={() => setManual(false)}>
+              Pick a different one
+            </button>
+          </div>
+        ) : null}
+
+        <div className="tabs" hidden={!manual || chosen !== null}>
           <button
             className={`tab${transport === 'http' ? ' is-active' : ''}`}
             onClick={() => setTransport('http')}
@@ -276,7 +343,7 @@ function ConnectDialog({
           </button>
         </div>
 
-        <div className="field">
+        <div className="field" hidden={!manual}>
           <label htmlFor="mcp-name">Name</label>
           <input
             id="mcp-name"
@@ -290,7 +357,7 @@ function ConnectDialog({
           </div>
         </div>
 
-        <div className="field">
+        <div className="field" hidden={!manual}>
           <label htmlFor="mcp-description">What it is for</label>
           <input
             id="mcp-description"
@@ -300,7 +367,7 @@ function ConnectDialog({
           />
         </div>
 
-        {transport === 'http' ? (
+        {manual && transport === 'http' ? (
           <div className="field">
             <label htmlFor="mcp-url">Server URL</label>
             <input
@@ -310,12 +377,14 @@ function ConnectDialog({
               onChange={(event) => setUrl(event.target.value)}
             />
             <div className="hint">
-              {policy.allowed_hosts.length
-                ? `Allowed hosts: ${policy.allowed_hosts.join(', ')}`
-                : 'No outbound hosts are allow-listed yet — an administrator sets CWAP_HTTP_ALLOWLIST.'}
+              {chosen
+                ? 'This server is one this platform ships with, so it needs no allow-listing.'
+                : policy.allowed_hosts.length
+                  ? `Any other host must be allow-listed. Allowed here: ${policy.allowed_hosts.join(', ')}`
+                  : 'A host that is not on the list above must be added to CWAP_HTTP_ALLOWLIST by an administrator.'}
             </div>
           </div>
-        ) : (
+        ) : manual ? (
           <>
             <div className="field">
               <label htmlFor="mcp-command">Command</label>
@@ -337,13 +406,18 @@ function ConnectDialog({
                 placeholder="-y @modelcontextprotocol/server-github"
                 onChange={(event) => setArgs(event.target.value)}
               />
+              {chosen?.argument_hint ? (
+                <div className="hint">{chosen.argument_hint}</div>
+              ) : null}
             </div>
           </>
-        )}
+        ) : null}
 
-        <div className="field">
+        <div className="field" hidden={!manual}>
           <label htmlFor="mcp-secret-name">
-            Credential {transport === 'http' ? '(header)' : '(environment variable)'}
+            {chosen?.credentials[0]?.label ??
+              `Credential ${transport === 'http' ? '(header)' : '(environment variable)'}`}
+            {chosen?.credentials[0]?.required === false ? ' (optional)' : ''}
           </label>
           <div className="row">
             <input
@@ -355,12 +429,21 @@ function ConnectDialog({
             <input
               type="password"
               value={secretValue}
-              placeholder="Optional"
+              placeholder={
+                chosen?.credentials[0]?.required === false
+                  ? 'Optional'
+                  : chosen?.credentials.length
+                    ? 'Required by this server'
+                    : 'Optional'
+              }
               autoComplete="off"
               onChange={(event) => setSecretValue(event.target.value)}
             />
           </div>
-          <div className="hint">Stored encrypted and never sent back to the browser.</div>
+          <div className="hint">
+            {chosen?.credentials[0]?.how ? `${chosen.credentials[0].how} ` : ''}
+            Stored encrypted and never sent back to the browser.
+          </div>
         </div>
 
         {result ? (
@@ -369,7 +452,7 @@ function ConnectDialog({
           </div>
         ) : null}
 
-        <div className="row">
+        <div className="row" hidden={!manual}>
           <button className="btn" onClick={test} disabled={busy !== null}>
             {busy === 'test' ? 'Trying…' : 'Test'}
           </button>
@@ -386,5 +469,69 @@ function ConnectDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * The servers this deployment can reach, grouped so the list reads as choices
+ * rather than as inventory.
+ *
+ * An entry that cannot be connected here is still shown, with the reason. The
+ * alternative — hiding it — leaves someone wondering whether the platform
+ * supports their system at all, when the honest answer is "it does, and an
+ * administrator has to allow it first".
+ */
+function Catalogue({
+  known,
+  onPick,
+  onBlank,
+}: {
+  known: MCPDirectoryEntry[];
+  onPick: (entry: MCPDirectoryEntry) => void;
+  onBlank: () => void;
+}) {
+  const categories = known.reduce<Record<string, MCPDirectoryEntry[]>>((groups, entry) => {
+    (groups[entry.category] ??= []).push(entry);
+    return groups;
+  }, {});
+
+  return (
+    <>
+      {Object.entries(categories).map(([category, entries]) => (
+        <div key={category}>
+          <p className="panel-title small">{category}</p>
+          {entries.map((entry) => (
+            <button
+              key={entry.key}
+              className="list-item"
+              style={{
+                width: '100%',
+                textAlign: 'left',
+                opacity: entry.available ? 1 : 0.55,
+                cursor: entry.available ? 'pointer' : 'not-allowed',
+              }}
+              disabled={!entry.available}
+              title={entry.blocked_reason || undefined}
+              onClick={() => onPick(entry)}
+            >
+              <span style={{ flex: 1 }}>
+                <strong>{entry.label}</strong>
+                {entry.read_only ? <span className="chip">read only</span> : null}
+                {entry.credentials.some((credential) => credential.required) ? (
+                  <span className="chip">needs a token</span>
+                ) : null}
+                <div className="muted small">
+                  {entry.available ? entry.summary : entry.blocked_reason}
+                </div>
+              </span>
+            </button>
+          ))}
+        </div>
+      ))}
+
+      <button className="btn btn--block" style={{ marginTop: 8 }} onClick={onBlank}>
+        Something else — I have the details
+      </button>
+    </>
   );
 }

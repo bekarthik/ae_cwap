@@ -367,6 +367,25 @@ endpoint. `CWAP_HTTP_ALLOWLIST` is empty by default, and a workflow containing a
 HTTP node additionally requires the `WRITE_EXTERNAL` scope, which is not granted
 on registration.
 
+There is exactly one exemption, and it applies only to MCP: the hosts named by
+`mcp_connect/directory.py`. Empty-by-default was making the intended use as
+impossible as the unintended one — nobody could connect GitHub without an
+environment variable on a machine they may not administer — and a fixed,
+code-reviewed list of published endpoints answers "which hosts may this
+deployment reach" as well as an allow-list does, in a reviewed file rather than
+in a text box. An HTTP *node* gets no exemption at all, an unlisted MCP host is
+gated exactly as before, and `CWAP_MCP_DIRECTORY=off` removes the exemption.
+
+### Schema growth
+
+`create_all` only creates whole tables, so a release that adds a column to an
+existing one breaks every database created before it. `add_missing_columns()`
+runs after creation and applies the one migration that is safe unattended:
+adding a column that has a default or is nullable. Renames, retypes and drops
+are left to a migration tool and a human, and a column that cannot be added
+safely is logged by name rather than failing every boot with a database error
+that does not say which column it meant.
+
 ## Data model
 
 | Table | Purpose |

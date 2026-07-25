@@ -78,7 +78,13 @@ class Settings:
     llm_base_url: str = field(default_factory=lambda: _env("CWAP_LLM_BASE_URL", ""))
     llm_api_key: str = field(default_factory=lambda: _env("CWAP_LLM_API_KEY", ""))
     llm_max_tokens: int = field(default_factory=lambda: _env_int("CWAP_LLM_MAX_TOKENS", 4096))
-    llm_timeout_seconds: int = field(default_factory=lambda: _env_int("CWAP_LLM_TIMEOUT", 120))
+    # Ten minutes, because the machine on the other end is frequently somebody's
+    # laptop. A local reasoning model thinks for minutes before its first token,
+    # and a timeout that fires mid-thought fails a whole run over a limit that
+    # was only ever a guess about hardware. Nothing is lost by waiting: a worker
+    # blocks on one job, and a genuinely dead endpoint fails at connect, not at
+    # the timeout. A tenant can raise or lower this from Models without a restart.
+    llm_timeout_seconds: int = field(default_factory=lambda: _env_int("CWAP_LLM_TIMEOUT", 600))
     # "auto" tries native tool calling and permanently downgrades to a prompted
     # JSON protocol if the server rejects it. "native" or "prompted" force one.
     llm_tool_mode: str = field(default_factory=lambda: _env("CWAP_LLM_TOOL_MODE", "auto"))
@@ -108,6 +114,14 @@ class Settings:
     max_steps_per_run: int = field(default_factory=lambda: _env_int("CWAP_MAX_STEPS", 50))
     http_node_timeout_seconds: int = field(default_factory=lambda: _env_int("CWAP_HTTP_TIMEOUT", 20))
     http_node_allowlist: str = field(default_factory=lambda: _env("CWAP_HTTP_ALLOWLIST", ""))
+    # Whether the built-in MCP directory's hosts are reachable without being in
+    # the allow-list above. On by default: those endpoints are a fixed,
+    # code-reviewed list, and requiring an environment variable to connect
+    # GitHub made "connect any MCP server" a claim nobody could act on. Every
+    # other host still needs the allow-list. Off restores one single answer.
+    mcp_directory_enabled: bool = field(
+        default_factory=lambda: _env_bool("CWAP_MCP_DIRECTORY", True)
+    )
     # Lets a tenant point the platform at its own model endpoint from the UI.
     # Off by default: a stored base URL is a request this server will make, so
     # enabling it widens what a tenant can reach from inside the deployment.

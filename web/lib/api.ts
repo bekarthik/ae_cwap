@@ -11,6 +11,7 @@ import type {
   AgentDefinition,
   InstantiatedTemplate,
   TemplateSummary,
+  MCPDirectoryEntry,
   MCPPolicy,
   MCPServerConfig,
   MCPServerRecord,
@@ -173,20 +174,44 @@ export const api = {
     }),
 
   /** One real completion, so a broken configuration is caught before it is saved. */
-  testModel: (provider: string, model: string, baseUrl = '', apiKey = '') =>
+  testModel: (
+    provider: string,
+    model: string,
+    baseUrl = '',
+    apiKey = '',
+    timeoutSeconds = 0,
+  ) =>
     request<{ ok: boolean; message: string; model: string; latency_ms: number }>(
       '/api/models/test',
       {
         method: 'POST',
-        body: JSON.stringify({ provider, model, base_url: baseUrl, api_key: apiKey }),
+        body: JSON.stringify({
+          provider,
+          model,
+          base_url: baseUrl,
+          api_key: apiKey,
+          timeout_seconds: timeoutSeconds,
+        }),
       },
     ),
 
   /** `apiKey: null` keeps the stored credential; `''` clears it. */
-  saveModel: (provider: string, model: string, baseUrl = '', apiKey: string | null = null) =>
+  saveModel: (
+    provider: string,
+    model: string,
+    baseUrl = '',
+    apiKey: string | null = null,
+    timeoutSeconds = 0,
+  ) =>
     request<{ stored: unknown; active: unknown }>('/api/models', {
       method: 'PUT',
-      body: JSON.stringify({ provider, model, base_url: baseUrl, api_key: apiKey }),
+      body: JSON.stringify({
+        provider,
+        model,
+        base_url: baseUrl,
+        api_key: apiKey,
+        timeout_seconds: timeoutSeconds,
+      }),
     }),
 
   clearModel: () => request<{ cleared: boolean }>('/api/models', { method: 'DELETE' }),
@@ -258,6 +283,10 @@ export const api = {
 
   listMcpServers: () =>
     request<{ servers: MCPServerRecord[]; policy: MCPPolicy }>('/api/mcp'),
+
+  /** Servers that can be connected without an administrator being asked first. */
+  mcpDirectory: () =>
+    request<{ servers: MCPDirectoryEntry[]; policy: MCPPolicy }>('/api/mcp/directory'),
 
   /** Try a server without storing anything. */
   testMcpServer: (config: MCPServerConfig, credentials: Record<string, string> = {}) =>

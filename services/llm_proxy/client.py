@@ -326,7 +326,7 @@ class AnthropicProvider:
     FALLBACK_BETA = "server-side-fallback-2026-07-01"
     DEFAULT_MODEL = "claude-opus-5"
 
-    def __init__(self, model: str = "", *, api_key: str = "", timeout: int = 120) -> None:
+    def __init__(self, model: str = "", *, api_key: str = "", timeout: int = 0) -> None:
         try:
             import anthropic  # noqa: PLC0415 - optional dependency
         except ImportError as exc:
@@ -335,6 +335,7 @@ class AnthropicProvider:
                 "install it with: pip install -e '.[llm]'"
             ) from exc
 
+        timeout = timeout or get_settings().llm_timeout_seconds
         self._anthropic = anthropic
         # An empty api_key means "resolve from the environment or an `ant auth
         # login` profile", which is the SDK's own resolution order.
@@ -536,7 +537,7 @@ class OpenAICompatibleProvider:
         base_url: str,
         model: str,
         api_key: str = "",
-        timeout: int = 120,
+        timeout: int = 0,
         label: str = "",
         notes: str = "",
     ) -> None:
@@ -554,7 +555,7 @@ class OpenAICompatibleProvider:
         settings = get_settings()
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
-        self._timeout = timeout
+        self._timeout = timeout or settings.llm_timeout_seconds
         # "auto" tries native tool calling once and downgrades permanently on a
         # rejection; an operator can force either mode.
         self._tool_mode = settings.llm_tool_mode
@@ -840,7 +841,9 @@ class OpenAICompatibleProvider:
         except httpx.TimeoutException as exc:
             raise LLMProxyError(
                 f"{self.capabilities.label} did not respond within {self._timeout}s. "
-                "Local models on modest hardware are slow; raise CWAP_LLM_TIMEOUT."
+                "A local model on modest hardware can take minutes, especially a "
+                "reasoning model — raise \"How long to wait\" in Models, or set "
+                "CWAP_LLM_TIMEOUT for the whole deployment."
             ) from exc
 
         if response.status_code >= 400:
@@ -904,6 +907,7 @@ def build_provider(
     model: str = "",
     base_url: str = "",
     api_key: str = "",
+    timeout: int = 0,
 ) -> LLMProvider:
     """Construct a provider.
 
@@ -914,6 +918,7 @@ def build_provider(
     """
     settings = settings or get_settings()
     name = (provider or settings.llm_provider).strip().lower()
+    seconds = int(timeout) if timeout and int(timeout) > 0 else settings.llm_timeout_seconds
 
     if name == "stub":
         return StubProvider(model or settings.llm_model or "stub-model")
@@ -922,7 +927,7 @@ def build_provider(
         return AnthropicProvider(
             model or settings.llm_model,
             api_key=api_key or settings.anthropic_api_key,
-            timeout=settings.llm_timeout_seconds,
+            timeout=seconds,
         )
 
     preset = resolve(name)
@@ -935,12 +940,18 @@ def build_provider(
         )
 
     return _from_preset(
-        preset, settings, model=model, base_url=base_url, api_key=api_key
+        preset, settings, model=model, base_url=base_url, api_key=api_key, timeout=seconds
     )
 
 
 def _from_preset(
-    preset: Preset, settings, *, model: str = "", base_url: str = "", api_key: str = ""
+    preset: Preset,
+    settings,
+    *,
+    model: str = "",
+    base_url: str = "",
+    api_key: str = "",
+    timeout: int = 0,
 ) -> OpenAICompatibleProvider:
     resolved_url = base_url or settings.llm_base_url or preset.base_url
     resolved_model = model or settings.llm_model or preset.default_model
@@ -957,7 +968,7 @@ def _from_preset(
         base_url=resolved_url,
         model=resolved_model,
         api_key=resolved_key,
-        timeout=settings.llm_timeout_seconds,
+        timeout=timeout or settings.llm_timeout_seconds,
         label=preset.label,
         notes=preset.notes,
     )
@@ -970,6 +981,7 @@ def provider_for(config) -> LLMProvider:
         model=config.model,
         base_url=config.base_url,
         api_key=config.api_key,
+        timeout=getattr(config, "timeout_seconds", 0),
     )
 
 
@@ -993,7 +1005,13 @@ def get_provider() -> LLMProvider:
 
     stored = _stored_config()
     if stored is not None:
-        key = (stored.provider, stored.model, stored.base_url, stored.api_key)
+        key = (
+            stored.provider,
+            stored.model,
+            stored.base_url,
+            stored.api_key,
+            stored.timeout_seconds,
+        )
         cached = _tenant_providers.get(key)
         if cached is None:
             cached = provider_for(stored)

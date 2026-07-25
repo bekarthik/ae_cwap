@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from cwap_contracts.v3 import MCPServerConfig, MCPServerRecord
 from fastapi import APIRouter, Depends, HTTPException
-from mcp_connect import policy, registry
+from mcp_connect import directory, policy, registry
 from pydantic import BaseModel, ConfigDict, Field
 
 from api_gateway.security import Principal, current_principal
@@ -50,6 +50,19 @@ def list_servers(
         # user fills in a form that will be refused.
         "policy": policy.describe(),
     }
+
+
+@router.get("/directory")
+def list_directory(
+    principal: Principal = Depends(current_principal),
+) -> dict[str, object]:
+    """Servers that can be connected without an administrator being asked first.
+
+    Ahead of the connected list on purpose: "which of these do you want" is a
+    better first question than an empty URL field, and every entry already knows
+    its endpoint, what it is for and which credential it will ask for.
+    """
+    return {"servers": directory.as_dicts(), "policy": policy.describe()}
 
 
 @router.post("/test")
