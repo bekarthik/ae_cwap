@@ -32,6 +32,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     # --- persistence -------------------------------------------------
@@ -57,13 +64,33 @@ class Settings:
     jwt_ttl_seconds: int = field(default_factory=lambda: _env_int("CWAP_JWT_TTL", 60 * 60 * 12))
 
     # --- llm proxy ---------------------------------------------------
-    # "stub" keeps the platform runnable with no credentials; "anthropic" calls the real API.
+    # "stub" (offline, no credentials), "anthropic", or any preset naming an
+    # OpenAI-compatible server: ollama, vllm, lmstudio, llamacpp, openai,
+    # together, groq, openrouter, mistral, deepseek, fireworks, litellm.
+    # See llm_proxy.presets for the full table.
     llm_provider: str = field(default_factory=lambda: _env("CWAP_LLM_PROVIDER", "stub"))
-    llm_model: str = field(default_factory=lambda: _env("CWAP_LLM_MODEL", "claude-opus-5"))
-    llm_effort: str = field(default_factory=lambda: _env("CWAP_LLM_EFFORT", "high"))
-    llm_max_tokens: int = field(default_factory=lambda: _env_int("CWAP_LLM_MAX_TOKENS", 16000))
-    anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY", ""))
+    llm_model: str = field(default_factory=lambda: _env("CWAP_LLM_MODEL", ""))
+    llm_base_url: str = field(default_factory=lambda: _env("CWAP_LLM_BASE_URL", ""))
+    llm_api_key: str = field(default_factory=lambda: _env("CWAP_LLM_API_KEY", ""))
+    llm_max_tokens: int = field(default_factory=lambda: _env_int("CWAP_LLM_MAX_TOKENS", 4096))
     llm_timeout_seconds: int = field(default_factory=lambda: _env_int("CWAP_LLM_TIMEOUT", 120))
+    # Anthropic-only knob. Ignored (and reported as ignored) by other providers.
+    llm_effort: str = field(default_factory=lambda: _env("CWAP_LLM_EFFORT", "high"))
+    # Sampling knob for open models. Rejected by current Claude models, so the
+    # Anthropic provider drops it rather than sending a request that would 400.
+    llm_temperature: float = field(default_factory=lambda: _env_float("CWAP_LLM_TEMPERATURE", 0.7))
+    anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY", ""))
+
+    # --- embeddings ---------------------------------------------------
+    # "hashing" is the offline default. "openai_compatible" calls a /v1/embeddings
+    # endpoint — the same one Ollama, vLLM, LM Studio and OpenAI all expose.
+    embedding_provider: str = field(default_factory=lambda: _env("CWAP_EMBEDDING_PROVIDER", "hashing"))
+    embedding_model: str = field(default_factory=lambda: _env("CWAP_EMBEDDING_MODEL", ""))
+    embedding_base_url: str = field(default_factory=lambda: _env("CWAP_EMBEDDING_BASE_URL", ""))
+    embedding_api_key: str = field(default_factory=lambda: _env("CWAP_EMBEDDING_API_KEY", ""))
+    embedding_timeout_seconds: int = field(
+        default_factory=lambda: _env_int("CWAP_EMBEDDING_TIMEOUT", 60)
+    )
 
     # --- execution limits --------------------------------------------
     max_steps_per_run: int = field(default_factory=lambda: _env_int("CWAP_MAX_STEPS", 50))

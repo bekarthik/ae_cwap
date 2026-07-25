@@ -3,12 +3,14 @@
 import { useMemo } from 'react';
 
 import { kindFor, type CanvasEdge, type CanvasNode } from '@/lib/graph';
-import type { KnowledgeSummary } from '@/lib/types';
+import type { KnowledgeSummary, RuntimeInfo } from '@/lib/types';
 
 interface Props {
   node: CanvasNode | null;
   edge: CanvasEdge | null;
   corpora: KnowledgeSummary[];
+  /** Drives which generation controls are shown — see GenerationControls. */
+  runtime: RuntimeInfo | null;
   onPatchNode: (id: string, patch: Partial<CanvasNode['data']>) => void;
   onPatchParams: (id: string, params: Record<string, unknown>) => void;
   onPatchEdgeBindings: (id: string, bindings: Record<string, string>) => void;
@@ -33,6 +35,7 @@ export function Inspector({
   node,
   edge,
   corpora,
+  runtime,
   onPatchNode,
   onPatchParams,
   onPatchEdgeBindings,
@@ -57,6 +60,7 @@ export function Inspector({
     <NodeInspector
       node={node}
       corpora={corpora}
+      runtime={runtime}
       onPatchNode={onPatchNode}
       onPatchParams={onPatchParams}
       onDelete={onDeleteNode}
@@ -67,12 +71,14 @@ export function Inspector({
 function NodeInspector({
   node,
   corpora,
+  runtime,
   onPatchNode,
   onPatchParams,
   onDelete,
 }: {
   node: CanvasNode;
   corpora: KnowledgeSummary[];
+  runtime: RuntimeInfo | null;
   onPatchNode: Props['onPatchNode'];
   onPatchParams: Props['onPatchParams'];
   onDelete: (id: string) => void;
@@ -161,23 +167,7 @@ function NodeInspector({
               <code>{'{{context}}'}</code>.
             </div>
           </div>
-          <div className="field">
-            <label htmlFor="effort">Reasoning effort</label>
-            <select
-              id="effort"
-              value={String(params.effort ?? 'high')}
-              onChange={(event) => set('effort', event.target.value)}
-            >
-              {['low', 'medium', 'high', 'xhigh', 'max'].map((level) => (
-                <option key={level} value={level}>
-                  {level}
-                </option>
-              ))}
-            </select>
-            <div className="hint">
-              Higher effort means deeper reasoning, more tokens and more latency.
-            </div>
-          </div>
+          <GenerationControls params={params} runtime={runtime} set={set} />
         </>
       ) : null}
 
@@ -221,7 +211,7 @@ function NodeInspector({
             <label htmlFor="query">Search query</label>
             <textarea
               id="query"
-              value={String(params.query_template ?? '{{goal}}')}
+              value={String(params.query_template ?? '{{query}}')}
               onChange={(event) => set('query_template', event.target.value)}
             />
           </div>
@@ -337,6 +327,101 @@ function NodeInspector({
         Delete step
       </button>
     </div>
+  );
+}
+
+/**
+ * Only the knobs the configured backend actually honours.
+ *
+ * Current Claude models reject `temperature` outright; open models have no
+ * notion of `effort`. Showing both and silently dropping one would make the
+ * canvas lie about what a step does, so the controls follow the backend's
+ * declared capabilities — while a value saved for a *different* backend is
+ * kept (a workflow stays portable) and flagged as inactive here.
+ */
+function GenerationControls({
+  params,
+  runtime,
+  set,
+}: {
+  params: Record<string, unknown>;
+  runtime: RuntimeInfo | null;
+  set: (key: string, value: unknown) => void;
+}) {
+  const supports = runtime?.llm.supports;
+  const label = runtime?.llm.label ?? 'the configured model';
+  // Before capabilities load, show everything rather than flash a partial form.
+  const showEffort = supports ? supports.effort : true;
+  const showTemperature = supports ? supports.temperature : true;
+
+  return (
+    <>
+      {showEffort ? (
+        <div className="field">
+          <label htmlFor="effort">Reasoning effort</label>
+          <select
+            id="effort"
+            value={String(params.effort ?? 'high')}
+            onChange={(event) => set('effort', event.target.value)}
+          >
+            {(runtime?.effort_levels ?? ['low', 'medium', 'high', 'xhigh', 'max']).map(
+              (level) => (
+                <option key={level} value={level}>
+                  {level}
+                </option>
+              ),
+            )}
+          </select>
+          <div className="hint">
+            Higher effort means deeper reasoning, more tokens and more latency.
+          </div>
+        </div>
+      ) : null}
+
+      {showTemperature ? (
+        <div className="field">
+          <label htmlFor="temperature">
+            Temperature {Number(params.temperature ?? 0.7).toFixed(2)}
+          </label>
+          <input
+            id="temperature"
+            type="range"
+            min={0}
+            max={2}
+            step={0.05}
+            value={Number(params.temperature ?? 0.7)}
+            onChange={(event) => set('temperature', Number(event.target.value))}
+          />
+          <div className="hint">Lower is more predictable, higher is more varied.</div>
+        </div>
+      ) : null}
+
+      <div className="field">
+        <label htmlFor="max-tokens">Maximum output tokens</label>
+        <input
+          id="max-tokens"
+          type="number"
+          min={64}
+          max={128000}
+          step={64}
+          value={Number(params.max_tokens ?? 4096)}
+          onChange={(event) => set('max_tokens', Number(event.target.value))}
+        />
+      </div>
+
+      {supports && !showTemperature && params.temperature !== undefined ? (
+        <div className="notice notice--warn">
+          This step has a temperature saved, but {label} does not accept one. It is
+          ignored here and used again if you switch models.
+        </div>
+      ) : null}
+      {supports && !showEffort && params.effort ? (
+        <div className="notice notice--warn">
+          This step has a reasoning effort saved, but {label} does not support it. It is
+          ignored here and used again if you switch models.
+        </div>
+      ) : null}
+    </>
   );
 }
 

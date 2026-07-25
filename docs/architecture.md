@@ -106,13 +106,26 @@ what both the scaffolder and a user editing bindings expect. (This was found by
 driving the real UI: every scaffolded workflow failed on its second step until
 the merged set was persisted. `tests/test_run_inputs.py` is the guard.)
 
-### One module talks to the model vendor
+### One module talks to any model
 
-`services/llm_proxy` is the only place that imports an LLM SDK. That keeps API
-keys in one process, gives model calls one place to be logged and redacted, and
-means the current-model API details — no sampling parameters, refusals arriving
-as successful responses, server-side fallback — are handled once instead of in
-every node executor.
+`services/llm_proxy` is the only place that talks to a model. That keeps
+credentials in one process, gives model calls one place to be logged and
+redacted, and — more importantly — makes the platform model-agnostic: nothing in
+a saved workflow names a vendor, so the same graph runs on a local Llama, a
+self-hosted Qwen, or a hosted Claude.
+
+Two client implementations cover everything, because almost every model server in
+use speaks the OpenAI chat-completions wire format. Adding a backend is an entry
+in `presets.py`, not a new class.
+
+The hard part is not transport, it is that backends accept genuinely different
+knobs: current Claude models *reject* `temperature` with a 400, and open models
+have no notion of `effort`. Each provider therefore declares
+`ProviderCapabilities`; `GET /api/runtime` reports them so the canvas renders
+only the controls that backend honours; a node keeps knobs meant for other
+backends so a workflow stays portable; and anything ignored at run time is logged
+and recorded on the step, so a run report never implies a setting took effect
+when it did not. Full rationale in [`models.md`](models.md).
 
 ### Egress is default-deny
 

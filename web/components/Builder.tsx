@@ -33,6 +33,7 @@ import type {
   NodeType,
   RunReport,
   RunStatus,
+  RuntimeInfo,
   ScaffoldResponse,
   Session,
   WorkflowSummary,
@@ -59,6 +60,32 @@ export function Builder(props: Props) {
   );
 }
 
+/** Which model this deployment is wired to, stated where the user can see it. */
+function BackendChip({ runtime }: { runtime: RuntimeInfo }) {
+  const { llm, embeddings } = runtime;
+  if (!llm.configured) {
+    return (
+      <span className="status-pill" data-status="FAILED" title={llm.error}>
+        model not configured
+      </span>
+    );
+  }
+  const detail = [
+    llm.base_url ? `endpoint ${llm.base_url}` : null,
+    embeddings.identity ? `embeddings ${embeddings.identity}` : null,
+    llm.notes || null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  return (
+    <span className="status-pill" title={detail}>
+      {llm.label}
+      {llm.model ? ` · ${llm.model}` : ''}
+    </span>
+  );
+}
+
 function BuilderInner({ session, onSignOut }: Props) {
   const initial = useMemo(() => emptyGraph(), []);
   const [meta, setMeta] = useState({
@@ -76,6 +103,7 @@ function BuilderInner({ session, onSignOut }: Props) {
 
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [corpora, setCorpora] = useState<KnowledgeSummary[]>([]);
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [goalOpen, setGoalOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -92,12 +120,14 @@ function BuilderInner({ session, onSignOut }: Props) {
 
   const refreshLists = useCallback(async () => {
     try {
-      const [workflowList, corpusList] = await Promise.all([
+      const [workflowList, corpusList, runtimeInfo] = await Promise.all([
         api.listWorkflows(),
         api.listKnowledge(),
+        api.runtime(),
       ]);
       setWorkflows(workflowList);
       setCorpora(corpusList);
+      setRuntime(runtimeInfo);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not load your workspace.');
     }
@@ -363,6 +393,8 @@ function BuilderInner({ session, onSignOut }: Props) {
 
         <div className="spacer" />
 
+        {runtime ? <BackendChip runtime={runtime} /> : null}
+
         <button className="btn" onClick={() => setGoalOpen(true)}>
           Start from a goal
         </button>
@@ -490,6 +522,7 @@ function BuilderInner({ session, onSignOut }: Props) {
             node={selectedNode}
             edge={selectedEdge}
             corpora={corpora}
+            runtime={runtime}
             onPatchNode={patchNode}
             onPatchParams={patchParams}
             onPatchEdgeBindings={patchEdgeBindings}

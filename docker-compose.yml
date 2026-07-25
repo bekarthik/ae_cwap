@@ -44,6 +44,12 @@ services:
       CWAP_CORS_ORIGINS: http://localhost:3000
       CWAP_JWT_SECRET: ${CWAP_JWT_SECRET:?set CWAP_JWT_SECRET before starting}
       CWAP_LLM_PROVIDER: ${CWAP_LLM_PROVIDER:-stub}
+      CWAP_LLM_MODEL: ${CWAP_LLM_MODEL:-}
+      CWAP_LLM_BASE_URL: ${CWAP_LLM_BASE_URL:-}
+      CWAP_LLM_API_KEY: ${CWAP_LLM_API_KEY:-}
+      CWAP_EMBEDDING_PROVIDER: ${CWAP_EMBEDDING_PROVIDER:-hashing}
+      CWAP_EMBEDDING_MODEL: ${CWAP_EMBEDDING_MODEL:-}
+      CWAP_EMBEDDING_BASE_URL: ${CWAP_EMBEDDING_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     ports: ['8000:8000']
     command: uvicorn api_gateway.app:app --host 0.0.0.0 --port 8000
@@ -59,6 +65,12 @@ services:
       CWAP_REDIS_URL: redis://redis:6379/0
       CWAP_JWT_SECRET: ${CWAP_JWT_SECRET:?set CWAP_JWT_SECRET before starting}
       CWAP_LLM_PROVIDER: ${CWAP_LLM_PROVIDER:-stub}
+      CWAP_LLM_MODEL: ${CWAP_LLM_MODEL:-}
+      CWAP_LLM_BASE_URL: ${CWAP_LLM_BASE_URL:-}
+      CWAP_LLM_API_KEY: ${CWAP_LLM_API_KEY:-}
+      CWAP_EMBEDDING_PROVIDER: ${CWAP_EMBEDDING_PROVIDER:-hashing}
+      CWAP_EMBEDDING_MODEL: ${CWAP_EMBEDDING_MODEL:-}
+      CWAP_EMBEDDING_BASE_URL: ${CWAP_EMBEDDING_BASE_URL:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Hosts an HTTP node is permitted to reach. Empty means no outbound calls.
       CWAP_HTTP_ALLOWLIST: ${CWAP_HTTP_ALLOWLIST:-}
@@ -78,3 +90,6 @@ services:
 
 volumes:
   pgdata:
+# Pointing at a model on the host (Ollama, vLLM, LM Studio) from inside these
+# containers means host.docker.internal, not localhost:
+#   CWAP_LLM_PROVIDER=ollama CWAP_LLM_BASE_URL=http://host.docker.internal:11434/v1

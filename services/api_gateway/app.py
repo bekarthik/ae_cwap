@@ -152,6 +152,8 @@ def create_app() -> FastAPI:
             "version": API_VERSION,
             "broker": settings.broker_backend,
             "llm_provider": settings.llm_provider,
+            "llm_model": settings.llm_model,
+            "embedding_provider": settings.embedding_provider,
             "inline_worker": settings.inline_worker,
         }
 

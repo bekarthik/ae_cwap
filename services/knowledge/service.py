@@ -26,7 +26,12 @@ from cwap_contracts import (
     RetrievedChunk,
 )
 
-from knowledge.embeddings import cosine_similarity, get_embedder
+from knowledge.embeddings import (
+    EmbeddingError,
+    cosine_similarity,
+    embed_many,
+    get_embedder,
+)
 
 #: Prefer to break a chunk at a paragraph or sentence boundary rather than
 #: mid-word, so retrieved context reads as prose.
@@ -90,6 +95,14 @@ def ingest(request: IngestRequest) -> KnowledgeHandle:
     embedder = get_embedder()
     handle = f"kb_{uuid.uuid4().hex[:16]}"
 
+    # Embed outside the transaction: a remote embedding model can take seconds
+    # per batch, and holding a write transaction open across the network is how
+    # you get lock contention under concurrent uploads.
+    try:
+        vectors = embed_many(embedder, chunks)
+    except EmbeddingError as exc:
+        raise KnowledgeError(f"could not index '{request.title}': {exc}") from exc
+
     # One transaction for the document row and every chunk: a partially indexed
     # corpus would silently return incomplete answers forever.
     with unit_of_work() as session:
@@ -99,10 +112,11 @@ def ingest(request: IngestRequest) -> KnowledgeHandle:
                 tenant_id=request.tenant_id,
                 title=request.title,
                 chunk_count=len(chunks),
+                embedding_model=embedder.identity,
             )
         )
         session.flush()
-        for ordinal, chunk in enumerate(chunks):
+        for ordinal, (chunk, vector) in enumerate(zip(chunks, vectors, strict=True)):
             session.add(
                 Chunk(
                     id=f"ch_{uuid.uuid4().hex[:16]}",
@@ -110,7 +124,7 @@ def ingest(request: IngestRequest) -> KnowledgeHandle:
                     tenant_id=request.tenant_id,
                     ordinal=ordinal,
                     text=chunk,
-                    embedding=embedder.embed(chunk),
+                    embedding=vector,
                 )
             )
 
@@ -125,7 +139,6 @@ def ingest(request: IngestRequest) -> KnowledgeHandle:
 def retrieve(request: RetrievalRequest) -> RetrievalResult:
     """Top-K semantic search over one corpus, scoped to one tenant."""
     embedder = get_embedder()
-    query_vector = embedder.embed(request.query)
 
     with read_only_session() as session:
         document = (
@@ -138,6 +151,7 @@ def retrieve(request: RetrievalRequest) -> RetrievalResult:
                 f"knowledge handle '{request.handle}' is not available to tenant "
                 f"'{request.tenant_id}'"
             )
+        indexed_with = document.embedding_model or ""
         rows = (
             session.query(Chunk)
             .filter_by(handle=request.handle, tenant_id=request.tenant_id)
@@ -145,6 +159,20 @@ def retrieve(request: RetrievalRequest) -> RetrievalResult:
         )
         title = document.title
         candidates = [(row.id, row.text, row.embedding, row.ordinal) for row in rows]
+
+    # Comparing vectors from two different embedding models produces scores that
+    # look plausible and mean nothing. Refuse, and say exactly what to do.
+    if indexed_with and indexed_with != embedder.identity:
+        raise KnowledgeError(
+            f"'{title}' was indexed with '{indexed_with}' but the platform is now "
+            f"configured for '{embedder.identity}'. Re-upload the document, or set "
+            "the embedding configuration back."
+        )
+
+    try:
+        query_vector = embedder.embed(request.query)
+    except EmbeddingError as exc:
+        raise KnowledgeError(f"could not embed the query: {exc}") from exc
 
     scored = [
         (cosine_similarity(query_vector, embedding), chunk_id, text, ordinal)

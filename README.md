@@ -7,8 +7,9 @@ every decision stream back in real time.
 
 The platform runs end to end with **no external infrastructure and no API keys**:
 SQLite, an in-memory broker and a deterministic stub model are the defaults. Each
-of those swaps to PostgreSQL, Redis and the Claude API through configuration
-alone.
+of those swaps to PostgreSQL, Redis and a real model through configuration alone
+— and "a real model" means any of them, from Llama on your laptop to a hosted
+Claude.
 
 ```bash
 make install
@@ -60,7 +61,7 @@ Queue (in-memory | Redis)                    ──► Dead Letter Queue
     ▼
 Worker ── state machine ── node executors ── PostgreSQL / SQLite
                                 │
-                                ├─ LLM Proxy      (the only vendor SDK caller)
+                                ├─ LLM Proxy      (any model: local or hosted)
                                 ├─ RAG retrieval  (tenant-scoped)
                                 └─ HTTP connector (default-deny egress, 2PC gated)
 ```
@@ -111,11 +112,11 @@ services/
   nlp/                Goal diagnosis and workflow scaffolding
   knowledge/          Chunking, embeddings, tenant-scoped RAG
   orchestrator/       State machine, executors, worker, Celery entry point
-  llm_proxy/          The only module that talks to a model vendor
+  llm_proxy/          The only module that talks to a model, any vendor
 web/                  Next.js canvas (React Flow)
-tests/                160 tests, no external services required
+tests/                205 tests, no external services required
 deploy/               Container images
-docs/                 Architecture, contract mandate, epic traceability
+docs/                 Architecture, contracts, model backends, epics
 ```
 
 ---
@@ -129,7 +130,7 @@ list. The ones that matter:
 | --- | --- | --- |
 | `CWAP_DATABASE_URL` | `sqlite:///./cwap.sqlite3` | a PostgreSQL DSN |
 | `CWAP_BROKER` | `memory` | `redis` (then run the worker separately) |
-| `CWAP_LLM_PROVIDER` | `stub` | `anthropic` (with `ANTHROPIC_API_KEY`) |
+| `CWAP_LLM_PROVIDER` | `stub` | `ollama`, `vllm`, `together`, `anthropic`, … |
 | `CWAP_JWT_SECRET` | a known dev string | **required** in any deployment |
 | `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node may reach |
 
@@ -156,16 +157,43 @@ make contracts   # re-approve the contract lock after a deliberate version bump
 
 ### Using a real model
 
+Any model, including open-weight ones running on your own hardware. Full table
+and rationale: [`docs/models.md`](docs/models.md).
+
 ```bash
-export CWAP_LLM_PROVIDER=anthropic
-export ANTHROPIC_API_KEY=...      # or run `ant auth login`
+# Open-weight, local, no credentials
+ollama pull llama3.1
+export CWAP_LLM_PROVIDER=ollama CWAP_LLM_MODEL=llama3.1
 ```
 
-`services/llm_proxy` is the only place that imports a vendor SDK. It handles the
-three things that are easy to get wrong on current Claude models: no sampling
-parameters (they are rejected with a 400), safety refusals arrive as successful
-responses and must be checked before reading content, and server-side fallback
-is opted into so a declined request is re-run rather than failing the workflow.
+```bash
+# Hosted open models, or any OpenAI-compatible endpoint
+export CWAP_LLM_PROVIDER=together CWAP_LLM_API_KEY=...
+export CWAP_LLM_MODEL=meta-llama/Llama-3.3-70B-Instruct-Turbo
+```
+
+```bash
+# Anthropic
+export CWAP_LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=...
+```
+
+RAG embeddings are configured the same way and independently, since a local
+`nomic-embed-text` alongside a hosted chat model is a normal setup:
+
+```bash
+export CWAP_EMBEDDING_PROVIDER=ollama CWAP_EMBEDDING_MODEL=nomic-embed-text
+```
+
+`services/llm_proxy` is the only module in the codebase that talks to a model.
+Two implementations cover everything: the Anthropic SDK, and one HTTP client for
+every backend speaking the OpenAI chat-completions format.
+
+Backends genuinely differ — current Claude models *reject* `temperature` with a
+400, and open models have no notion of `effort`. Rather than send a parameter
+that errors or silently drop one the user set, each provider declares its
+capabilities, the canvas renders only the controls that backend honours, and
+anything ignored at run time is logged and recorded on the step. A saved workflow
+keeps knobs for other backends, so it stays portable across models.
 
 ---
 
@@ -176,8 +204,12 @@ Stated plainly, because each is a deliberate boundary rather than an oversight:
 - **The default embedder is lexical, not semantic.** `HashingEmbedder` is a
   hashed bag-of-words with crude stemming. It is deterministic and needs no
   credentials, which makes retrieval testable — but it matches wording, not
-  meaning. Production should swap in a real embedding model; the `Embedder`
-  protocol is the only thing that has to change.
+  meaning. Set `CWAP_EMBEDDING_PROVIDER` to a real embedding model for anything
+  that cares about retrieval quality.
+- **Streaming token output is not plumbed through.** Model calls are
+  request/response, so a node's answer appears when the step finishes rather
+  than token by token. The log stream is live; the model output within a step is
+  not.
 - **Uploads are plain text only.** PDF and DOCX extraction belongs in its own
   service. Binary uploads are refused with an explanation rather than indexed as
   mojibake that would quietly poison every retrieval.

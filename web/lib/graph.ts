@@ -47,10 +47,14 @@ export const NODE_KINDS: NodeKind[] = [
     blurb: 'Ask a model to reason, plan, or write.',
     icon: '✳',
     accent: '#7c3aed',
+    // Both knobs are carried deliberately: the backend honours what it can
+    // and reports the rest as ignored, so one workflow runs on any model.
     defaultParams: {
       system: 'You are a careful assistant.',
       prompt_template: '{{goal}}',
       effort: 'high',
+      temperature: 0.7,
+      max_tokens: 4096,
     },
   },
   {

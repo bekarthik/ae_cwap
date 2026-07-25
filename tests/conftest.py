@@ -22,6 +22,7 @@ from cwap_contracts import (
     WorkflowGraph,
     WorkflowNode,
 )
+from knowledge.embeddings import HashingEmbedder, set_embedder
 from llm_proxy.client import StubProvider, reset_provider_cache
 
 
@@ -33,6 +34,7 @@ def isolated_platform(tmp_path, monkeypatch):
     monkeypatch.setenv("CWAP_INLINE_WORKER", "false")
     monkeypatch.setenv("CWAP_JWT_SECRET", "test-secret-not-used-anywhere-real")
     monkeypatch.setenv("CWAP_LLM_PROVIDER", "stub")
+    monkeypatch.setenv("CWAP_EMBEDDING_PROVIDER", "hashing")
     monkeypatch.delenv("CWAP_HTTP_ALLOWLIST", raising=False)
     monkeypatch.delenv("CWAP_DEMO_PASSWORD", raising=False)
     reset_settings_cache()
@@ -42,6 +44,7 @@ def isolated_platform(tmp_path, monkeypatch):
 
     set_broker(InMemoryBroker())
     reset_provider_cache(StubProvider("stub-model"))
+    set_embedder(HashingEmbedder())
 
     # The log bus caches per-run sequence counters in process memory.
     log_bus._sequences.clear()  # noqa: SLF001 - test isolation
@@ -52,6 +55,7 @@ def isolated_platform(tmp_path, monkeypatch):
     db.dispose()
     set_broker(None)
     reset_provider_cache(None)
+    set_embedder(None)
     reset_settings_cache()
 
 

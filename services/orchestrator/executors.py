@@ -18,7 +18,12 @@ from cwap_common.idempotency import IdempotencyGate
 from cwap_common.settings import get_settings
 from cwap_contracts import LogLevel, NodeType, RetrievalRequest
 from knowledge.service import KnowledgeError, retrieve
-from llm_proxy.client import LLMProxyError, LLMRefusal, get_provider
+from llm_proxy.client import (
+    GenerationOptions,
+    LLMProxyError,
+    LLMRefusal,
+    get_provider,
+)
 
 from orchestrator.variables import BindingError, RunContext, render_template, resolve
 
@@ -109,19 +114,22 @@ def execute_llm(request: ExecutionRequest) -> ExecutionOutcome:
             "or connect an input that supplies 'goal'"
         )
 
+    provider = get_provider()
+    options = _generation_options(params)
+
     request.emit(
         "llm.request",
-        message=f"calling model for node '{request.node.id}'",
-        data={"prompt_chars": len(prompt), "effort": params.get("effort")},
+        message=f"calling {provider.capabilities.label} for node '{request.node.id}'",
+        data={
+            "prompt_chars": len(prompt),
+            "model": provider.capabilities.model,
+            "effort": options.effort,
+            "temperature": options.temperature,
+        },
     )
 
     try:
-        completion = get_provider().complete(
-            prompt,
-            system=params.get("system"),
-            max_tokens=params.get("max_tokens"),
-            effort=params.get("effort"),
-        )
+        completion = provider.complete(prompt, system=params.get("system"), options=options)
     except LLMRefusal as exc:
         # A safety decline is a content outcome, not a transport failure — say so
         # plainly instead of surfacing it as an opaque provider error.
@@ -132,6 +140,30 @@ def execute_llm(request: ExecutionRequest) -> ExecutionOutcome:
     except LLMProxyError as exc:
         raise NodeExecutionError(f"node '{request.node.id}' could not reach the model: {exc}") from exc
 
+    if completion.ignored_options:
+        # Say so rather than letting a run report imply a knob took effect. A
+        # temperature set on a node running against Claude, or an effort level
+        # set against Llama, is silently meaningless otherwise.
+        request.emit(
+            "llm.options_ignored",
+            level=LogLevel.WARN,
+            message=(
+                f"{provider.capabilities.label} does not support "
+                f"{', '.join(completion.ignored_options)}; those settings had no effect"
+            ),
+            data={"ignored": list(completion.ignored_options)},
+        )
+
+    if completion.metadata.get("truncated"):
+        request.emit(
+            "llm.truncated",
+            level=LogLevel.WARN,
+            message=(
+                f"'{request.node.id}' hit the output token limit; the answer is cut off. "
+                "Raise max_tokens on this step."
+            ),
+        )
+
     request.emit(
         "llm.response",
         message=f"model returned {completion.output_tokens} output tokens",
@@ -141,12 +173,48 @@ def execute_llm(request: ExecutionRequest) -> ExecutionOutcome:
     return ExecutionOutcome(
         output={"text": completion.text},
         derived_context={
+            "provider": provider.capabilities.provider,
             "model": completion.model,
             "input_tokens": completion.input_tokens,
             "output_tokens": completion.output_tokens,
             "stop_reason": completion.stop_reason,
+            "ignored_options": list(completion.ignored_options),
         },
     )
+
+
+def _generation_options(params: dict[str, Any]) -> GenerationOptions:
+    """Read the node's generation knobs.
+
+    A node may carry settings for a backend it is not currently running against
+    — that is deliberate, so a workflow stays portable between models. The
+    provider decides what to honour.
+    """
+    stop = params.get("stop")
+    if isinstance(stop, str):
+        stop = [stop]
+
+    return GenerationOptions(
+        max_tokens=_optional_int(params.get("max_tokens")),
+        effort=params.get("effort") or None,
+        temperature=_optional_float(params.get("temperature")),
+        top_p=_optional_float(params.get("top_p")),
+        stop=tuple(stop or ()),
+    )
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------------

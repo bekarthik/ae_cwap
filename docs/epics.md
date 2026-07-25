@@ -157,7 +157,10 @@ Streaming details that matter in practice:
 | Dual validation/authorisation gateway + DLQ | Built |
 | Idempotency, 2PC external calls, transactions | Built |
 | Redis/Celery transport | Built (abstraction + Celery entry point; in-memory is the default) |
+| Any model backend — local open-weight, self-hosted, or hosted | Built, capability-aware |
+| Embeddings from any OpenAI-compatible endpoint | Built; hashing is the offline default |
 | PostgreSQL | Supported (JSONB variants); SQLite is the default |
 | Parallel step execution | **Not built** — only decision branching |
+| Token-by-token streaming from a model | **Not built** — steps are request/response |
 | Schema migrations | **Not built** — `init_db()` only |
 | Binary document extraction (PDF/DOCX) | **Not built** — refused with an explanation |

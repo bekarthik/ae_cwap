@@ -192,6 +192,10 @@ class Document(Base):
     tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Which embedder produced this corpus's vectors. Retrieval refuses to
+    # compare across models: cosine distance between vectors from two different
+    # embedding spaces is meaningless, and would return confident nonsense.
+    embedding_model: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

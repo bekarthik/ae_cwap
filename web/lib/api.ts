@@ -9,6 +9,7 @@
 
 import type {
   KnowledgeSummary,
+  RuntimeInfo,
   RetrievalResult,
   RunReport,
   RunSummary,
@@ -118,6 +119,9 @@ function extractMessage(body: unknown): string | null {
 }
 
 export const api = {
+  /** What model backend this deployment runs, and which knobs it honours. */
+  runtime: () => request<RuntimeInfo>('/api/runtime'),
+
   register: (email: string, password: string, tenantId = 'default') =>
     request<Session>('/api/auth/register', {
       method: 'POST',

@@ -141,3 +141,48 @@ export interface RetrievalResult {
   query: string;
   chunks: RetrievedChunk[];
 }
+
+/** What the configured model backend can actually do. */
+export interface ProviderSupport {
+  effort: boolean;
+  temperature: boolean;
+  top_p: boolean;
+  stop_sequences: boolean;
+  system_prompt: boolean;
+}
+
+export interface LlmInfo {
+  configured: boolean;
+  provider: string;
+  label?: string;
+  model?: string;
+  base_url?: string;
+  deterministic?: boolean;
+  notes?: string;
+  error?: string;
+  supports: ProviderSupport;
+}
+
+export interface EmbeddingInfo {
+  configured: boolean;
+  provider: string;
+  identity?: string;
+  dimensions?: number;
+  semantic?: boolean;
+  error?: string;
+}
+
+export interface AvailableProvider {
+  key: string;
+  label: string;
+  requires_key: boolean;
+  local: boolean;
+  notes: string;
+}
+
+export interface RuntimeInfo {
+  llm: LlmInfo;
+  embeddings: EmbeddingInfo;
+  effort_levels: string[];
+  available_providers: AvailableProvider[];
+}
