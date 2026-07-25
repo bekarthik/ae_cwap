@@ -16,7 +16,7 @@ from urllib.parse import urlparse
 from cwap_common.db import unit_of_work
 from cwap_common.idempotency import IdempotencyGate
 from cwap_common.settings import get_settings
-from cwap_contracts import LogLevel, NodeType, RetrievalRequest
+from cwap_contracts.v2 import LogLevel, NodeType, RetrievalRequest
 from knowledge.service import KnowledgeError, retrieve
 from llm_proxy.client import (
     GenerationOptions,
@@ -44,6 +44,10 @@ class ExecutionRequest:
     tenant_id: str
     #: emit(event, message=..., level=..., data=...) -> streams a LogEvent
     emit: Callable[..., None]
+    #: Memory shared by every reasoning node in this workflow.
+    workflow_memory_scope: str = ""
+    #: Whether this run carries a write scope. Gates skills that reach outward.
+    allow_side_effects: bool = False
 
 
 @dataclass
@@ -215,6 +219,108 @@ def _optional_float(value: Any) -> float | None:
         return float(value) if value not in (None, "") else None
     except (TypeError, ValueError):
         return None
+
+
+
+# ---------------------------------------------------------------------------
+# agent — a role with skills, a loop, and memory
+# ---------------------------------------------------------------------------
+
+
+def execute_agent(request: ExecutionRequest) -> ExecutionOutcome:
+    """Run a stored agent against an objective built from this node's inputs.
+
+    The node holds the objective template and nothing else. Everything that makes
+    the agent what it is — its role, its skills, its memory — lives on the stored
+    agent, so improving it improves every workflow that uses it.
+    """
+    from agents import registry as agent_registry  # noqa: PLC0415 - avoid import cycle
+    from agents import runtime as agent_runtime  # noqa: PLC0415
+
+    node = request.node
+    if not node.agent_id:
+        raise NodeExecutionError(f"agent node '{node.id}' names no agent")
+
+    try:
+        agent = agent_registry.get(request.tenant_id, node.agent_id)
+    except agent_registry.AgentNotFound as exc:
+        raise NodeExecutionError(
+            f"node '{node.id}' references agent '{node.agent_id}', which no longer exists"
+        ) from exc
+
+    params = node.params or {}
+    template = params.get("objective_template")
+    objective = (
+        render_template(template, request.inputs)
+        if template
+        else (agent.objective or str(request.inputs.get("goal") or "")).strip()
+    )
+    if not objective:
+        raise NodeExecutionError(
+            f"agent node '{node.id}' has no objective; set one on the node or the agent"
+        )
+
+    request.emit(
+        "agent.started",
+        message=f"'{agent.name}' starting — {len(agent.skill_ids)} skill(s) available",
+        data={
+            "agent": agent.name,
+            "agent_id": agent.id,
+            "max_iterations": agent.max_iterations,
+        },
+    )
+
+    try:
+        result = agent_runtime.run_agent(
+            agent,
+            objective,
+            agent_runtime.AgentRunContext(
+                tenant_id=request.tenant_id,
+                run_id=request.run_id,
+                step_execution_id=request.step_execution_id,
+                workflow_memory_scope=request.workflow_memory_scope,
+                allow_side_effects=request.allow_side_effects,
+                emit=request.emit,
+            ),
+        )
+    except agent_runtime.AgentError as exc:
+        raise NodeExecutionError(str(exc)) from exc
+
+    if result.status == agent_runtime.BUDGET_EXHAUSTED:
+        # Say so rather than presenting a partial answer as finished.
+        request.emit(
+            "agent.incomplete",
+            level=LogLevel.WARN,
+            message=(
+                f"'{agent.name}' used all {agent.max_iterations} iterations without "
+                "concluding; the answer may be partial"
+            ),
+        )
+
+    request.emit(
+        "agent.finished",
+        message=(
+            f"'{agent.name}' finished in {result.iterations} iteration(s)"
+            + (f", using {', '.join(dict.fromkeys(result.skills_used))}" if result.skills_used else "")
+        ),
+        data={"status": result.status, "skills_used": result.skills_used},
+    )
+
+    return ExecutionOutcome(
+        output={"text": result.text},
+        derived_context={
+            "agent": agent.name,
+            "agent_id": agent.id,
+            "agent_version": agent.version,
+            "status": result.status,
+            "iterations": result.iterations,
+            "skills_used": result.skills_used,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            # The reasoning path, so the run report shows how it got there.
+            "turns": [turn.model_dump(mode="json") for turn in result.turns],
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +599,7 @@ def _decode(response: Any) -> Any:
 
 EXECUTORS: dict[NodeType, Executor] = {
     NodeType.INPUT: execute_input,
+    NodeType.AGENT: execute_agent,
     NodeType.LLM: execute_llm,
     NodeType.RAG_RETRIEVE: execute_rag,
     NodeType.TRANSFORM: execute_transform,
@@ -502,8 +609,9 @@ EXECUTORS: dict[NodeType, Executor] = {
 }
 
 #: Node types whose execution can be observed outside the platform, and which
-#: therefore must pass through the idempotency gate before running.
-SIDE_EFFECTING = frozenset({NodeType.HTTP_REQUEST})
+#: therefore must pass through the idempotency gate before running. Agents are
+#: included because a skill they invoke may reach outward.
+SIDE_EFFECTING = frozenset({NodeType.HTTP_REQUEST, NodeType.AGENT})
 
 
 def executor_for(node_type: NodeType) -> Executor:

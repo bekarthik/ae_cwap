@@ -8,7 +8,16 @@ from __future__ import annotations
 import json
 
 import pytest
-from cwap_contracts import (
+from cwap_contracts.errors import SchemaNotRegistered
+from cwap_contracts.registry import (
+    CONTRACT_REGISTRY,
+    fingerprint,
+    latest_version,
+    lock_snapshot,
+    read_lock,
+    resolve,
+)
+from cwap_contracts.v2 import (
     LEGAL_TRANSITIONS,
     TERMINAL_STATES,
     ExecutionState,
@@ -17,14 +26,6 @@ from cwap_contracts import (
     PermissionRequirement,
     ServiceName,
     WorkflowJobPayload,
-)
-from cwap_contracts.errors import SchemaNotRegistered
-from cwap_contracts.registry import (
-    CONTRACT_REGISTRY,
-    fingerprint,
-    lock_snapshot,
-    read_lock,
-    resolve,
 )
 from pydantic import ValidationError
 
@@ -72,7 +73,13 @@ class TestRegistryLock:
         assert fingerprint(model) == fingerprint(model)
 
     def test_resolve_returns_the_registered_model(self):
-        assert resolve("WorkflowJobPayload", "v1") is WorkflowJobPayload
+        assert resolve("WorkflowJobPayload", "v2") is WorkflowJobPayload
+
+    def test_both_versions_stay_registered(self):
+        """A deployment mid-upgrade holds both, so v1 must not disappear when
+        v2 arrives."""
+        assert resolve("WorkflowGraph", "v1") is not resolve("WorkflowGraph", "v2")
+        assert latest_version("WorkflowGraph") == "v2"
 
     def test_resolving_an_unknown_contract_is_a_typed_error(self):
         with pytest.raises(SchemaNotRegistered):

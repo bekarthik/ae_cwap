@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from cwap_contracts import NodeType, WorkflowEdge, WorkflowGraph, WorkflowNode
+from cwap_contracts.v2 import NodeType, WorkflowEdge, WorkflowGraph, WorkflowNode
 from pydantic import ValidationError
 
 

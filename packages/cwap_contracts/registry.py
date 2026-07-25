@@ -110,7 +110,28 @@ def _register_v1() -> None:
         register(model, version="v1")
 
 
+def _register_v2() -> None:
+    from cwap_contracts import v2
+
+    for model in (
+        v2.AgentDefinition,
+        v2.AgentTurn,
+        v2.DesignRequest,
+        v2.DesignResponse,
+        v2.MemoryEntry,
+        v2.RecallRequest,
+        v2.RecallResult,
+        v2.SkillDefinition,
+        v2.SkillProposal,
+        v2.StepOutputContext,
+        v2.WorkflowGraph,
+        v2.WorkflowJobPayload,
+    ):
+        register(model, version="v2")
+
+
 _register_v1()
+_register_v2()
 
 
 if __name__ == "__main__":  # pragma: no cover - maintenance entry point

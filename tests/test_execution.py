@@ -7,7 +7,7 @@ from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, User, WorkflowExecutionState
 from cwap_common.settings import get_settings, reset_settings_cache
-from cwap_contracts import (
+from cwap_contracts.v2 import (
     NodeType,
     WorkflowEdge,
     WorkflowGraph,
@@ -289,12 +289,12 @@ class TestHttpNodeSafety:
         assert "allow-list" in run.error
 
 
-class TestScaffoldedWorkflowsRun:
-    """The strongest guard on Epic 1: a goal the user types must produce a graph
-    that actually executes, not merely one that validates.
+class TestDesignedWorkflowsRun:
+    """The strongest guard on Epic 1: a goal the user types must produce a
+    workflow that actually executes, not merely one that validates.
 
-    Both bugs this class covers were found by driving the real UI — a draft can
-    be structurally valid and still fail on its first run.
+    A design can be structurally valid and still fail on its first run — that is
+    how both of the earlier scaffolder bugs got through.
     """
 
     @pytest.mark.parametrize(
@@ -303,15 +303,15 @@ class TestScaffoldedWorkflowsRun:
             "Plan my weekend trip to Denver",
             "Research our competitors and write a short comparison",
             "Summarise our internal handbook",
-            "Research the topic and if it mentions Denver write a summary, otherwise stop",
-            "Format the findings as a table",
+            "Compare two hosting providers and recommend one",
+            "Extract the action items and format them as a table",
             "zxqv wibble frobnicate",
         ],
     )
-    def test_a_scaffolded_workflow_runs_end_to_end(self, authorized_user, goal):
-        from cwap_contracts import GoalIntakeRequest, IngestRequest
+    def test_a_designed_workflow_runs_end_to_end(self, authorized_user, goal):
+        from cwap_contracts.v2 import DesignRequest, IngestRequest
+        from design.service import design
         from knowledge.service import ingest
-        from nlp.service import scaffold
 
         corpus = ingest(
             IngestRequest(
@@ -320,10 +320,35 @@ class TestScaffoldedWorkflowsRun:
                 content="Rail travel is preferred for journeys within the United Kingdom.",
             )
         )
-        graph = scaffold(
-            GoalIntakeRequest(goal=goal, knowledge_handles=[corpus.handle])
-        ).graph
+        response = design(
+            DesignRequest(
+                goal=goal, knowledge_handles=[corpus.handle], skip_questions=True
+            ),
+            authorized_user.tenant_id,
+        )
+        assert response.graph is not None
 
-        run_id = run_to_completion(graph=graph, job_context=authorized_user, inputs={})
+        run_id = run_to_completion(
+            graph=response.graph, job_context=authorized_user, inputs={}
+        )
         run = load_run(run_id)
         assert run.status == RUN_SUCCEEDED, run.error
+
+    def test_every_designed_workflow_is_built_from_agents(self, authorized_user):
+        """Item 3: a step in a designed workflow is an agent with a role, skills
+        and memory — not a bare model call."""
+        from cwap_contracts.v2 import DesignRequest, NodeType
+        from design.service import design
+
+        response = design(
+            DesignRequest(goal="Plan my weekend trip to Denver", skip_questions=True),
+            authorized_user.tenant_id,
+        )
+        working = [
+            node
+            for node in response.graph.nodes
+            if node.type not in (NodeType.INPUT, NodeType.OUTPUT)
+        ]
+        assert working, "the design produced no working steps"
+        assert all(node.type is NodeType.AGENT for node in working)
+        assert all(node.agent_id for node in working)

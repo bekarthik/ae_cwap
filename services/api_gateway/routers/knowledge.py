@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cwap_contracts import IngestRequest, KnowledgeHandle, RetrievalRequest, RetrievalResult
+from cwap_contracts.v2 import IngestRequest, KnowledgeHandle, RetrievalRequest, RetrievalResult
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from knowledge.service import KnowledgeError, delete, ingest, list_handles, retrieve
 

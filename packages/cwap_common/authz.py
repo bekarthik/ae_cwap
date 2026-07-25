@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from cwap_contracts import JobContext, ServiceName
+from cwap_contracts.v2 import JobContext, ServiceName
 from sqlalchemy.orm import Session
 
 from cwap_common.models import User

@@ -12,7 +12,7 @@ import asyncio
 from cwap_common.db import read_only_session
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, Workflow, WorkflowExecutionState
-from cwap_contracts import NodeType, WorkflowGraph
+from cwap_contracts.v2 import NodeType, WorkflowGraph
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from orchestrator.runner import start_run
 
@@ -36,9 +36,33 @@ router = APIRouter(tags=["runs"])
 KEEPALIVE_SECONDS = 20.0
 
 
-def _needs_write_scope(graph: WorkflowGraph) -> bool:
-    """A graph that can act on the outside world must declare a write scope."""
-    return any(node.type is NodeType.HTTP_REQUEST for node in graph.nodes)
+def _needs_write_scope(graph: WorkflowGraph, tenant_id: str) -> bool:
+    """A graph that can act on the outside world must declare a write scope.
+
+    Agent nodes count only when one of their skills can actually reach outward.
+    Requiring the scope for every agent would make the common case — agents that
+    only reason and retrieve — need a privilege it never uses.
+    """
+    if any(node.type is NodeType.HTTP_REQUEST for node in graph.nodes):
+        return True
+    return any(_agent_can_reach_outward(node, tenant_id) for node in graph.nodes)
+
+
+def _agent_can_reach_outward(node, tenant_id: str) -> bool:
+    from agents import registry as agent_registry  # noqa: PLC0415
+    from cwap_contracts.v2 import SkillKind  # noqa: PLC0415
+    from skills import registry as skill_registry  # noqa: PLC0415
+
+    if node.type is not NodeType.AGENT or not node.agent_id:
+        return False
+    try:
+        agent = agent_registry.get(tenant_id, node.agent_id)
+    except agent_registry.AgentNotFound:
+        return False
+    return any(
+        skill.kind is SkillKind.HTTP
+        for skill in skill_registry.get_many(tenant_id, agent.skill_ids)
+    )
 
 
 @router.post("/api/workflows/{workflow_id}/runs", response_model=RunSummary, status_code=202)
@@ -55,7 +79,7 @@ def create_run(
                 raise HTTPException(status_code=404, detail="workflow not found")
             graph = WorkflowGraph.model_validate(record.graph)
 
-    needs_write = _needs_write_scope(graph)
+    needs_write = _needs_write_scope(graph, principal.tenant_id)
     if needs_write and WRITE_EXTERNAL not in principal.scopes:
         # Fail here with an explanation rather than letting the producer's
         # authorisation pre-check reject it with a generic 403.

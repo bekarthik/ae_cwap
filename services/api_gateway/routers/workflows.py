@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import Workflow
-from cwap_contracts import WorkflowGraph
+from cwap_contracts.v2 import WorkflowGraph
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from api_gateway.schemas import (

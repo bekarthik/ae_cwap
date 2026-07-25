@@ -18,6 +18,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -218,3 +219,91 @@ class Chunk(Base):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(JsonCol, nullable=False)
+
+
+class Skill(Base):
+    """A capability an agent can invoke.
+
+    Stored declaratively — `definition` holds a prompt template, a corpus handle,
+    an allow-listed URL, or a list of other skills, never code. That is what
+    makes it safe for the platform to synthesise skills it does not have.
+    """
+
+    __tablename__ = "skills"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_skill_name_per_tenant"),
+        Index("ix_skills_tenant", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    parameters: Mapped[list[dict[str, Any]]] = mapped_column(JsonCol, default=list, nullable=False)
+    definition: Mapped[dict[str, Any]] = mapped_column(JsonCol, default=dict, nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), default="user", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Usage counters, so a synthesised skill that never works is visible rather
+    # than quietly re-selected forever.
+    invocations: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class Agent(Base):
+    """A reusable role with skills and a loop.
+
+    Referenced by canvas nodes rather than embedded in them, so improving an
+    agent improves every workflow that uses it.
+    """
+
+    __tablename__ = "agents"
+    __table_args__ = (Index("ix_agents_tenant", "tenant_id"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    objective: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    instructions: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    skill_ids: Mapped[list[str]] = mapped_column(JsonCol, default=list, nullable=False)
+    max_iterations: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
+    memory_config: Mapped[dict[str, Any]] = mapped_column(JsonCol, default=dict, nullable=False)
+    model_override: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class Memory(Base):
+    """One remembered thing, at whatever scope owns it.
+
+    A single table rather than three, because the read pattern is identical —
+    "give me what this scope knows about X" — and the scopes differ only in what
+    `scope_id` points at. `embedding` is nullable so a memory written while the
+    embedder is unavailable is still kept; it falls back to lexical recall.
+    """
+
+    __tablename__ = "memories"
+    __table_args__ = (
+        Index("ix_memories_scope", "scope", "scope_id"),
+        Index("ix_memories_tenant", "tenant_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), default="learning", nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(JsonCol, nullable=True)
+    embedding_model: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    source_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    usefulness: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

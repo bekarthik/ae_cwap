@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from cwap_common.db import read_only_session
 from cwap_common.models import Run
-from cwap_contracts import NodeType, WorkflowEdge, WorkflowGraph, WorkflowNode
+from cwap_contracts.v2 import NodeType, WorkflowEdge, WorkflowGraph, WorkflowNode
 from orchestrator.runner import RUN_SUCCEEDED, run_to_completion
 
 

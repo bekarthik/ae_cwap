@@ -13,7 +13,7 @@ from cwap_common import db
 from cwap_common.broker import InMemoryBroker, set_broker
 from cwap_common.logbus import log_bus
 from cwap_common.settings import reset_settings_cache
-from cwap_contracts import (
+from cwap_contracts.v2 import (
     JobContext,
     NodeType,
     PermissionRequirement,

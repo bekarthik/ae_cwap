@@ -24,10 +24,8 @@ import json
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from cwap_contracts import (
-    AuthorizationFailure,
-    ContractViolation,
-    CwapContractError,
+from cwap_contracts import AuthorizationFailure, ContractViolation, CwapContractError
+from cwap_contracts.v2 import (
     JobContext,
     ServiceName,
     WorkflowJobPayload,

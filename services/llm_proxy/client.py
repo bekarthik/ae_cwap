@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import hashlib
 import textwrap
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
 from cwap_common.settings import get_settings
 
+from llm_proxy.catalogue import capabilities_for
 from llm_proxy.presets import NATIVE_PROVIDERS, Preset, resolve
 
 #: Effort levels the Anthropic API accepts, cheapest first.
@@ -93,6 +94,14 @@ class ProviderCapabilities:
     supports_top_p: bool
     supports_stop_sequences: bool
     supports_system_prompt: bool
+    #: Native tool/function calling. When false the agent loop falls back to a
+    #: prompted JSON protocol, which is what makes small open models usable.
+    supports_tools: bool = True
+    #: Image input. Set from the model catalogue, since it is a property of the
+    #: model rather than of the endpoint.
+    supports_vision: bool = False
+    #: Exposes a reasoning/thinking mode.
+    supports_thinking: bool = False
     deterministic: bool = False
     base_url: str = ""
     notes: str = ""
@@ -111,8 +120,37 @@ class ProviderCapabilities:
                 "top_p": self.supports_top_p,
                 "stop_sequences": self.supports_stop_sequences,
                 "system_prompt": self.supports_system_prompt,
+                "tools": self.supports_tools,
+                "vision": self.supports_vision,
+                "thinking": self.supports_thinking,
             },
         }
+
+
+@dataclass(frozen=True)
+class ToolCallRequest:
+    """A model asking for a skill to be run. Provider-neutral."""
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    """One turn of an agent conversation.
+
+    `role` is one of user / assistant / tool. Providers translate this into
+    whatever shape they need; nothing above this layer knows the difference
+    between Anthropic content blocks and OpenAI tool_calls.
+    """
+
+    role: str
+    content: str = ""
+    tool_calls: tuple[ToolCallRequest, ...] = ()
+    #: Set on tool results, matching the call they answer.
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +162,8 @@ class LLMCompletion:
     stop_reason: str = "end_turn"
     input_tokens: int = 0
     output_tokens: int = 0
+    #: Skills the model wants run before it can continue.
+    tool_calls: tuple[ToolCallRequest, ...] = ()
     #: Options the caller asked for that this backend cannot honour. Recorded on
     #: the step so a run report never implies a knob took effect when it did not.
     ignored_options: tuple[str, ...] = ()
@@ -135,6 +175,15 @@ class LLMProvider(Protocol):
 
     def complete(
         self, prompt: str, *, system: str | None = None, options: GenerationOptions | None = None
+    ) -> LLMCompletion: ...
+
+    def converse(
+        self,
+        messages: list[ChatMessage],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        options: GenerationOptions | None = None,
     ) -> LLMCompletion: ...
 
 
@@ -188,6 +237,10 @@ class StubProvider:
             supports_top_p=True,
             supports_stop_sequences=True,
             supports_system_prompt=True,
+            # The stub never asks for a tool, so an agent loop always terminates
+            # on its first iteration. Declaring otherwise would make the canvas
+            # promise agentic behaviour the default backend cannot deliver.
+            supports_tools=False,
             deterministic=True,
             notes="No network, no credentials. Output is a stable function of the prompt.",
         )
@@ -206,6 +259,23 @@ class StubProvider:
             output_tokens=len(text.split()),
             metadata={"provider": "stub", "deterministic": True},
         )
+
+    def converse(
+        self,
+        messages: list[ChatMessage],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        options: GenerationOptions | None = None,
+    ) -> LLMCompletion:
+        """Never requests a tool, so an agent loop terminates in one iteration.
+
+        That is what keeps the execution tests deterministic. Tests that need to
+        exercise multi-iteration behaviour script a provider explicitly rather
+        than relying on a stub guessing when to call something.
+        """
+        transcript = "\n".join(f"{m.role}: {m.content}" for m in messages if m.content)
+        return self.complete(transcript, system=system, options=options)
 
 
 # ---------------------------------------------------------------------------
@@ -249,15 +319,20 @@ class AnthropicProvider:
             if api_key
             else anthropic.Anthropic(timeout=timeout)
         )
+        resolved = model or self.DEFAULT_MODEL
+        tools, vision, thinking = capabilities_for("anthropic", resolved)
         self.capabilities = ProviderCapabilities(
             provider="anthropic",
             label="Anthropic Claude",
-            model=model or self.DEFAULT_MODEL,
+            model=resolved,
             supports_effort=True,
             supports_temperature=False,
             supports_top_p=False,
             supports_stop_sequences=True,
             supports_system_prompt=True,
+            supports_tools=tools,
+            supports_vision=vision,
+            supports_thinking=thinking,
             notes="Current Claude models reject sampling parameters; use effort instead.",
         )
 
@@ -323,6 +398,87 @@ class AnthropicProvider:
             metadata={"provider": "anthropic", "effort": effort},
         )
 
+    def converse(
+        self,
+        messages: list[ChatMessage],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        options: GenerationOptions | None = None,
+    ) -> LLMCompletion:
+        """Multi-turn with native tool use.
+
+        Anthropic models carry tool calls as `tool_use` content blocks and expect
+        results back as `tool_result` blocks inside a user turn — not as a
+        separate role, which is where the OpenAI shape differs.
+        """
+        settings = get_settings()
+        options = options or GenerationOptions()
+        accepted, ignored = _filter_options(options, self.capabilities)
+        effort = str(accepted.get("effort") or settings.llm_effort).lower()
+
+        request: dict[str, Any] = {
+            "model": self.capabilities.model,
+            "max_tokens": options.max_tokens or settings.llm_max_tokens,
+            "messages": _to_anthropic_messages(messages),
+            "output_config": {"effort": effort},
+            "betas": [self.FALLBACK_BETA],
+            "fallbacks": "default",
+        }
+        if system:
+            request["system"] = system
+        if tools:
+            request["tools"] = [
+                {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "input_schema": tool["input_schema"],
+                }
+                for tool in tools
+            ]
+
+        try:
+            response = self._client.beta.messages.create(**request)
+        except TypeError:
+            request.pop("fallbacks", None)
+            request.pop("betas", None)
+            response = self._client.messages.create(**request)
+        except self._anthropic.APIStatusError as exc:
+            raise LLMProxyError(f"Claude API error {exc.status_code}: {exc.message}") from exc
+        except self._anthropic.APIConnectionError as exc:
+            raise LLMProxyError(f"could not reach the Claude API: {exc}") from exc
+
+        if getattr(response, "stop_reason", None) == "refusal":
+            details = getattr(response, "stop_details", None)
+            raise LLMRefusal(
+                "the model declined this request", category=getattr(details, "category", None)
+            )
+
+        text_parts: list[str] = []
+        calls: list[ToolCallRequest] = []
+        for block in response.content:
+            kind = getattr(block, "type", None)
+            if kind == "text":
+                text_parts.append(block.text)
+            elif kind == "tool_use":
+                calls.append(
+                    ToolCallRequest(
+                        id=block.id, name=block.name, arguments=dict(block.input or {})
+                    )
+                )
+
+        usage = getattr(response, "usage", None)
+        return LLMCompletion(
+            text="".join(text_parts),
+            model=getattr(response, "model", self.capabilities.model),
+            stop_reason=getattr(response, "stop_reason", "end_turn") or "end_turn",
+            input_tokens=getattr(usage, "input_tokens", 0) or 0,
+            output_tokens=getattr(usage, "output_tokens", 0) or 0,
+            tool_calls=tuple(calls),
+            ignored_options=ignored,
+            metadata={"provider": "anthropic", "effort": effort},
+        )
+
 
 # ---------------------------------------------------------------------------
 # openai-compatible (open models, local servers, and most hosted APIs)
@@ -366,6 +522,10 @@ class OpenAICompatibleProvider:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        # "auto" tries native tool calling once and downgrades permanently on a
+        # rejection; an operator can force either mode.
+        self._tool_mode = get_settings().llm_tool_mode
+        tools, vision, thinking = capabilities_for(provider, model)
         self.capabilities = ProviderCapabilities(
             provider=provider,
             label=label or provider,
@@ -375,6 +535,11 @@ class OpenAICompatibleProvider:
             supports_top_p=True,
             supports_stop_sequences=True,
             supports_system_prompt=True,
+            # A hint from the catalogue, not a promise: `_post` still downgrades
+            # permanently if the server rejects a tools request at runtime.
+            supports_tools=tools and self._tool_mode != "prompted",
+            supports_vision=vision,
+            supports_thinking=thinking,
             base_url=self._base_url,
             notes=notes,
         )
@@ -458,6 +623,179 @@ class OpenAICompatibleProvider:
                 "truncated": finish_reason == "length",
             },
         )
+
+    def converse(
+        self,
+        messages: list[ChatMessage],
+        *,
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        options: GenerationOptions | None = None,
+    ) -> LLMCompletion:
+        """Multi-turn, with native tool calling when the server supports it.
+
+        Tool support is not discoverable up front: a hosted API advertises it,
+        a local llama.cpp build may or may not have it, and the only honest way
+        to find out is to try. So the first attempt sends `tools`; a rejection
+        that names tools downgrades this provider to the prompted protocol for
+        the rest of its life, and the call is retried immediately rather than
+        failing the agent's turn.
+        """
+        if tools and self._tool_mode == "prompted":
+            return self._converse_prompted(messages, system, tools, options)
+
+        try:
+            return self._converse_native(messages, system, tools, options)
+        except _ToolsUnsupported:
+            self._tool_mode = "prompted"
+            self.capabilities = replace(self.capabilities, supports_tools=False)
+            return self._converse_prompted(messages, system, tools or [], options)
+
+    def _converse_native(
+        self,
+        messages: list[ChatMessage],
+        system: str | None,
+        tools: list[dict[str, Any]] | None,
+        options: GenerationOptions | None,
+    ) -> LLMCompletion:
+        payload = self._base_payload(options)
+        payload["messages"] = _to_openai_messages(messages, system)
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool["name"],
+                        "description": tool["description"],
+                        "parameters": tool["input_schema"],
+                    },
+                }
+                for tool in tools
+            ]
+            payload["tool_choice"] = "auto"
+
+        body = self._post(payload, tools_requested=bool(tools))
+        choice = body["choices"][0]
+        message = choice.get("message") or {}
+
+        calls: list[ToolCallRequest] = []
+        for raw in message.get("tool_calls") or []:
+            function = raw.get("function") or {}
+            calls.append(
+                ToolCallRequest(
+                    id=raw.get("id") or f"call_{len(calls)}",
+                    name=function.get("name", ""),
+                    arguments=_loads_arguments(function.get("arguments")),
+                )
+            )
+
+        usage = body.get("usage") or {}
+        return LLMCompletion(
+            text=message.get("content") or message.get("reasoning_content") or "",
+            model=body.get("model") or self.capabilities.model,
+            stop_reason=choice.get("finish_reason") or "stop",
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+            tool_calls=tuple(calls),
+            metadata={
+                "provider": self.capabilities.provider,
+                "tool_mode": "native",
+                "truncated": choice.get("finish_reason") == "length",
+            },
+        )
+
+    def _converse_prompted(
+        self,
+        messages: list[ChatMessage],
+        system: str | None,
+        tools: list[dict[str, Any]],
+        options: GenerationOptions | None,
+    ) -> LLMCompletion:
+        """Tool use for models that have none.
+
+        Plenty of capable open-weight models never learned function calling. The
+        alternative to this fallback is telling the user their model cannot run
+        agents, which would make "works with any model" untrue. The model is
+        asked to emit a single JSON object; anything that is not parseable as a
+        call is treated as a final answer, so a model that ignores the protocol
+        degrades to a plain one-shot response rather than erroring.
+        """
+        payload = self._base_payload(options)
+        payload["messages"] = _to_openai_messages(
+            messages, _prompted_system(system, tools) if tools else system
+        )
+
+        body = self._post(payload, tools_requested=False)
+        choice = body["choices"][0]
+        text = (choice.get("message") or {}).get("content") or ""
+
+        call = _parse_prompted_call(text, {tool["name"] for tool in tools}) if tools else None
+        usage = body.get("usage") or {}
+        return LLMCompletion(
+            text="" if call else text,
+            model=body.get("model") or self.capabilities.model,
+            stop_reason=choice.get("finish_reason") or "stop",
+            input_tokens=int(usage.get("prompt_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or 0),
+            tool_calls=(call,) if call else (),
+            metadata={
+                "provider": self.capabilities.provider,
+                "tool_mode": "prompted",
+                "truncated": choice.get("finish_reason") == "length",
+            },
+        )
+
+    def _base_payload(self, options: GenerationOptions | None) -> dict[str, Any]:
+        settings = get_settings()
+        options = options or GenerationOptions()
+        accepted, _ignored = _filter_options(options, self.capabilities)
+        payload: dict[str, Any] = {
+            "model": self.capabilities.model,
+            "max_tokens": options.max_tokens or settings.llm_max_tokens,
+            "temperature": accepted.get("temperature", settings.llm_temperature),
+            "stream": False,
+        }
+        if "top_p" in accepted:
+            payload["top_p"] = accepted["top_p"]
+        return payload
+
+    def _post(self, payload: dict[str, Any], *, tools_requested: bool) -> dict[str, Any]:
+        import httpx  # noqa: PLC0415
+
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        try:
+            with httpx.Client(timeout=self._timeout) as client:
+                response = client.post(
+                    f"{self._base_url}/chat/completions", json=payload, headers=headers
+                )
+        except httpx.ConnectError as exc:
+            raise LLMProxyError(
+                f"could not reach {self._base_url} — is the server running? ({exc})"
+            ) from exc
+        except httpx.TimeoutException as exc:
+            raise LLMProxyError(
+                f"{self.capabilities.label} did not respond within {self._timeout}s. "
+                "Local models on modest hardware are slow; raise CWAP_LLM_TIMEOUT."
+            ) from exc
+
+        if response.status_code >= 400:
+            detail = self._explain_error(response)
+            if tools_requested and _looks_like_tool_rejection(response):
+                raise _ToolsUnsupported(detail)
+            raise LLMProxyError(detail)
+
+        try:
+            body = response.json()
+            body["choices"][0]
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise LLMProxyError(
+                f"{self.capabilities.label} returned an unexpected response shape: "
+                f"{response.text[:400]}"
+            ) from exc
+        return body
 
     def _explain_error(self, response: Any) -> str:
         """Turn a backend's error into something a workflow author can act on."""
@@ -601,3 +939,209 @@ __all__ = [
     "get_provider",
     "reset_provider_cache",
 ]
+
+
+# ---------------------------------------------------------------------------
+# message translation and the prompted tool protocol
+# ---------------------------------------------------------------------------
+
+
+class _ToolsUnsupported(LLMProxyError):
+    """The server rejected the request *because* it was asked for tools.
+
+    Internal: it triggers a permanent downgrade to the prompted protocol rather
+    than surfacing to the caller.
+    """
+
+
+#: What the error has to be *about*. Without this, a rejected API key would
+#: silently downgrade the whole provider to the prompted protocol.
+_TOOL_SUBJECTS = ("tool", "function calling", "function_call")
+
+#: How servers say "I do not have that". Every backend phrases it differently —
+#: "does not support tools", "tools are unsupported", "unknown field: tools" —
+#: so the match is subject-plus-negation rather than a list of exact sentences,
+#: which would need an entry per server and still miss the next one.
+_UNSUPPORTED_MARKERS = (
+    "not support",
+    "unsupported",
+    "not supported",
+    "unknown field",
+    "unknown parameter",
+    "unrecognized",
+    "unrecognised",
+    "invalid parameter",
+    "extra inputs are not permitted",
+    "not implemented",
+    "not available",
+    "no such parameter",
+)
+
+
+def _looks_like_tool_rejection(response: Any) -> bool:
+    """Whether a 4xx means "I have no tools" rather than something else.
+
+    Matching on text is unpleasant, but there is no status code that means it,
+    and getting it wrong in either direction is costly: too narrow and a capable
+    open model is reported as broken, too broad and a bad API key silently
+    becomes a permanent downgrade.
+    """
+    body = (getattr(response, "text", "") or "").lower()
+    if not any(subject in body for subject in _TOOL_SUBJECTS):
+        return False
+    return any(marker in body for marker in _UNSUPPORTED_MARKERS)
+
+
+def _loads_arguments(raw: Any) -> dict[str, Any]:
+    """Tool arguments arrive as a JSON *string* in the OpenAI shape, and small
+    models sometimes emit something that is nearly JSON."""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    import json  # noqa: PLC0415
+
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {"input": parsed}
+    except (ValueError, TypeError):
+        return {"input": str(raw)}
+
+
+def _to_openai_messages(
+    messages: list[ChatMessage], system: str | None
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if system:
+        out.append({"role": "system", "content": system})
+
+    for message in messages:
+        if message.role == "tool":
+            out.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id or "",
+                    "content": message.content,
+                }
+            )
+            continue
+
+        entry: dict[str, Any] = {"role": message.role, "content": message.content or ""}
+        if message.tool_calls:
+            import json  # noqa: PLC0415
+
+            entry["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+                }
+                for call in message.tool_calls
+            ]
+        out.append(entry)
+    return out
+
+
+def _to_anthropic_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+    """Anthropic carries tool results inside a *user* turn as content blocks,
+    rather than as a distinct role. Consecutive results are merged into one
+    turn, which the API requires."""
+    out: list[dict[str, Any]] = []
+
+    for message in messages:
+        if message.role == "tool":
+            block = {
+                "type": "tool_result",
+                "tool_use_id": message.tool_call_id or "",
+                "content": message.content,
+            }
+            if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                out[-1]["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+            continue
+
+        if message.role == "assistant" and message.tool_calls:
+            blocks: list[dict[str, Any]] = []
+            if message.content:
+                blocks.append({"type": "text", "text": message.content})
+            blocks.extend(
+                {
+                    "type": "tool_use",
+                    "id": call.id,
+                    "name": call.name,
+                    "input": call.arguments,
+                }
+                for call in message.tool_calls
+            )
+            out.append({"role": "assistant", "content": blocks})
+            continue
+
+        out.append({"role": message.role, "content": message.content or ""})
+
+    return out
+
+
+PROMPTED_TOOL_PROTOCOL = """\
+You can use tools. To use one, reply with ONLY a JSON object and nothing else:
+
+{"tool": "<tool_name>", "arguments": {"<param>": "<value>"}}
+
+If you do not need a tool, reply with your answer as normal prose — no JSON.
+Use one tool at a time and wait for its result before deciding what to do next.
+
+Available tools:
+"""
+
+
+def _prompted_system(system: str | None, tools: list[dict[str, Any]]) -> str:
+    """Describe the tools in the system prompt for models with no tool API."""
+    described = []
+    for tool in tools:
+        properties = (tool.get("input_schema") or {}).get("properties") or {}
+        params = ", ".join(
+            f"{name} ({spec.get('type', 'string')})" for name, spec in properties.items()
+        )
+        described.append(f"- {tool['name']}({params}): {tool['description']}")
+
+    block = PROMPTED_TOOL_PROTOCOL + "\n".join(described)
+    return f"{system}\n\n{block}" if system else block
+
+
+def _parse_prompted_call(text: str, known: set[str]) -> ToolCallRequest | None:
+    """Read a tool call out of prose, or decide there isn't one.
+
+    Returns None on anything ambiguous. A model that ignores the protocol should
+    degrade to a plain answer, never to an invented tool call.
+    """
+    import json  # noqa: PLC0415
+    import uuid as _uuid  # noqa: PLC0415
+
+    candidate = text.strip()
+    if "```" in candidate:
+        blocks = [part for part in candidate.split("```") if "{" in part]
+        if blocks:
+            candidate = blocks[0]
+            if candidate.lstrip().lower().startswith("json"):
+                candidate = candidate.lstrip()[4:]
+
+    start, end = candidate.find("{"), candidate.rfind("}")
+    if start == -1 or end <= start:
+        return None
+
+    try:
+        parsed = json.loads(candidate[start : end + 1])
+    except (ValueError, TypeError):
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+    name = parsed.get("tool") or parsed.get("name")
+    if not isinstance(name, str) or name not in known:
+        return None
+
+    arguments = parsed.get("arguments") or parsed.get("input") or {}
+    if not isinstance(arguments, dict):
+        arguments = {"input": arguments}
+
+    return ToolCallRequest(id=f"call_{_uuid.uuid4().hex[:12]}", name=name, arguments=arguments)

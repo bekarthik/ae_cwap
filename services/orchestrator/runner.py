@@ -24,7 +24,7 @@ from cwap_common.idempotency import commit_step_output
 from cwap_common.logbus import log_bus
 from cwap_common.models import Run, WorkflowExecutionState
 from cwap_common.settings import get_settings
-from cwap_contracts import (
+from cwap_contracts.v2 import (
     ExecutionState,
     JobContext,
     LogLevel,
@@ -206,6 +206,10 @@ class Worker:
                     step_execution_id=payload.step_execution_id,
                     tenant_id=payload.job_context.tenant_id,
                     emit=emit,
+                    workflow_memory_scope=graph.memory_scope,
+                    # An agent's skills get no privilege the run does not have:
+                    # a write scope on the job is what permits reaching outward.
+                    allow_side_effects=bool(payload.job_context.permissions.required_write),
                 )
             )
         except (NodeExecutionError, BindingError) as exc:

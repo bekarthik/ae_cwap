@@ -74,6 +74,9 @@ class Settings:
     llm_api_key: str = field(default_factory=lambda: _env("CWAP_LLM_API_KEY", ""))
     llm_max_tokens: int = field(default_factory=lambda: _env_int("CWAP_LLM_MAX_TOKENS", 4096))
     llm_timeout_seconds: int = field(default_factory=lambda: _env_int("CWAP_LLM_TIMEOUT", 120))
+    # "auto" tries native tool calling and permanently downgrades to a prompted
+    # JSON protocol if the server rejects it. "native" or "prompted" force one.
+    llm_tool_mode: str = field(default_factory=lambda: _env("CWAP_LLM_TOOL_MODE", "auto"))
     # Anthropic-only knob. Ignored (and reported as ignored) by other providers.
     llm_effort: str = field(default_factory=lambda: _env("CWAP_LLM_EFFORT", "high"))
     # Sampling knob for open models. Rejected by current Claude models, so the

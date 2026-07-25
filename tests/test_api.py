@@ -147,29 +147,55 @@ class TestWorkflows:
         assert response.status_code == 404
 
 
-class TestDiagnose:
-    def test_a_goal_returns_a_diagnosis_and_a_draft(self, client, auth):
+class TestDesign:
+    def test_the_first_turn_asks_before_designing(self, client, auth):
+        """Item 2: the system gathers details rather than forcing the user to
+        specify a workflow."""
         response = client.post(
-            "/api/diagnose", json={"goal": "Plan my weekend trip to Denver"}, headers=auth
+            "/api/design", json={"goal": "Sort out our onboarding"}, headers=auth
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["diagnosis"]["required_steps"]
-        assert body["graph"]["nodes"]
+        assert body["stage"] == "clarifying"
+        assert body["questions"]
+        assert body["understanding"]
+        # Every question explains itself; an unexplained one gets answered badly.
+        assert all(question["why"] for question in body["questions"])
 
-    def test_uploaded_corpora_are_offered_to_the_scaffolder(self, client, auth):
-        client.post(
-            "/api/knowledge/text",
-            json={"title": "Handbook", "content": "Meals are capped at 45 GBP per day."},
-            headers=auth,
-        )
+    def test_answering_produces_a_design_of_agents(self, client, auth):
+        answers = {
+            "deliverable": "A short report",
+            "audience": "My team",
+            "constraints": "keep it under a page",
+        }
         response = client.post(
-            "/api/diagnose",
-            json={"goal": "Summarise our internal company handbook"},
+            "/api/design",
+            json={"goal": "Research our competitors and write it up", "answers": answers},
             headers=auth,
         )
-        node_types = {node["type"] for node in response.json()["graph"]["nodes"]}
-        assert "rag_retrieve" in node_types
+        body = response.json()
+        assert body["stage"] == "designed"
+        assert body["agents"], "a design with no agents is not a design"
+        assert body["graph"]["nodes"]
+        assert any(node["type"] == "agent" for node in body["graph"]["nodes"])
+
+    def test_skipping_questions_designs_immediately(self, client, auth):
+        response = client.post(
+            "/api/design/direct",
+            json={"goal": "Plan my weekend trip to Denver"},
+            headers=auth,
+        )
+        body = response.json()
+        assert body["stage"] == "designed"
+        assert body["graph"] is not None
+
+    def test_agents_are_created_and_listable(self, client, auth):
+        client.post(
+            "/api/design/direct", json={"goal": "Plan my weekend trip"}, headers=auth
+        )
+        agents = client.get("/api/agents", headers=auth).json()
+        assert agents, "designing a workflow should create its agents"
+        assert all(agent["role"] for agent in agents)
 
 
 class TestKnowledge:

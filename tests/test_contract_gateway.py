@@ -15,9 +15,8 @@ from cwap_common.contract_gateway import (
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import DeadLetter, User
 from cwap_common.settings import get_settings
-from cwap_contracts import (
-    AuthorizationFailure,
-    ContractViolation,
+from cwap_contracts import AuthorizationFailure, ContractViolation
+from cwap_contracts.v2 import (
     ExecutionState,
     JobContext,
     NextStepDefinition,

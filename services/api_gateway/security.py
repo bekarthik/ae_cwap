@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 import jwt
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import User
-from cwap_contracts import JobContext, PermissionRequirement
+from cwap_contracts.v2 import JobContext, PermissionRequirement
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 

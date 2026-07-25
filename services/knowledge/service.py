@@ -18,7 +18,7 @@ import uuid
 
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import Chunk, Document
-from cwap_contracts import (
+from cwap_contracts.v2 import (
     IngestRequest,
     KnowledgeHandle,
     RetrievalRequest,

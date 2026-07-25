@@ -21,7 +21,7 @@ import threading
 from contextlib import suppress
 from typing import Any
 
-from cwap_contracts import LogEvent, LogLevel
+from cwap_contracts.v2 import LogEvent, LogLevel
 from sqlalchemy import func
 
 from cwap_common.db import read_only_session, unit_of_work

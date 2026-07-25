@@ -10,7 +10,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from cwap_contracts import DiagnosisResult, WorkflowGraph
+from cwap_contracts.v2 import (
+    ClarifyingQuestion,
+    DesignStage,
+    PlannedAgent,
+    SkillGap,
+    WorkflowGraph,
+)
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
@@ -64,17 +70,26 @@ class WorkflowDetail(Strict):
     updated_at: datetime
 
 
-# ---- diagnosis -----------------------------------------------------------
+# ---- design --------------------------------------------------------------
 
 
-class DiagnoseRequest(Strict):
-    goal: str = Field(min_length=3, max_length=2000)
+class DesignGoalRequest(Strict):
+    goal: str = Field(min_length=3, max_length=4000)
+    #: question id -> answer. Absent on the first turn of the conversation.
+    answers: dict[str, str] = Field(default_factory=dict)
     knowledge_handles: list[str] = Field(default_factory=list)
+    #: Skip the questions and design from defaults.
+    skip_questions: bool = False
 
 
-class DiagnoseResponse(Strict):
-    diagnosis: DiagnosisResult
-    graph: WorkflowGraph
+class DesignGoalResponse(Strict):
+    stage: DesignStage
+    understanding: str
+    questions: list[ClarifyingQuestion] = Field(default_factory=list)
+    agents: list[PlannedAgent] = Field(default_factory=list)
+    skill_gaps: list[SkillGap] = Field(default_factory=list)
+    graph: WorkflowGraph | None = None
+    notes: list[str] = Field(default_factory=list)
 
 
 # ---- knowledge -----------------------------------------------------------
