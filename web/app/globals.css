@@ -548,3 +548,251 @@ textarea {
 .react-flow__attribution {
   display: none;
 }
+
+/* ---- design conversation, roster and memory --------------------------- */
+
+.modal--wide {
+  width: min(860px, 100%);
+}
+
+.design {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+/* What the system understood, said back before anything is built — the one
+   line a user should read before agreeing to a plan. */
+.design__understanding {
+  font-size: 14px;
+  margin: 0 0 14px;
+  padding: 9px 11px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.question {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 11px;
+}
+
+.question__label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+/* Why a question is being asked. Without it the design conversation reads as
+   an interrogation rather than as help. */
+.question__why {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.agent-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 11px 12px;
+}
+
+.agent-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.agent-card__step {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.agent-card__role {
+  margin: 6px 0 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.agent-card__why {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.chip--cap {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.chip--open {
+  margin-left: 6px;
+  background: var(--success-soft);
+  border-color: transparent;
+  color: var(--success);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.tab {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.tab.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.roster-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+
+.roster-item__head {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.roster-item__body {
+  padding: 0 9px 9px;
+  border-top: 1px solid var(--border);
+}
+
+.memory {
+  margin-top: 10px;
+}
+
+.memory__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.memory__item {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.memory__text {
+  flex: 1;
+}
+
+.memory__kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+
+.memory__kind--failure {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.memory__kind--learning {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* How much the platform currently trusts a lesson. Shown because a memory the
+   user cannot inspect is a memory they cannot correct. */
+.memory__trust {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.picker {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 16px;
+  margin: 14px 0;
+}
+
+.picker__providers,
+.picker__models {
+  max-height: 48vh;
+  overflow-y: auto;
+}
+
+.picker .list-item {
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.config {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 12px;
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+
+button.status-pill {
+  background: transparent;
+  cursor: pointer;
+}
+
+@media (max-width: 720px) {
+  .picker {
+    grid-template-columns: 1fr;
+  }
+}

@@ -14,6 +14,7 @@ that proves it. If a row has no test, treat it as unimplemented.
 | --- | --- | --- |
 | Centrally versioned registry | `cwap_contracts.registry` — `Name@version` → model | `test_contracts.py::TestRegistryLock` |
 | Change requires a version bump | JSON-Schema fingerprints in `contracts.lock.json` | `test_every_registered_contract_matches_the_approved_lock` |
+| Versions coexist during a rollout | `v1` and `v2` both registered and resolvable | `test_both_versions_stay_registered` |
 | `run_id` | `WorkflowJobPayload.run_id` | `test_structurally_mandatory_fields` |
 | `step_execution_id` | `WorkflowJobPayload.step_execution_id` | ↑ |
 | `job_context` with tenant, user, permission scope | `JobContext` + `PermissionRequirement` | `TestJobContext` |
@@ -34,6 +35,23 @@ Two supporting choices:
   silently dropped. That is the whole point of a closed schema.
 - `frozen=True` — a payload cannot be mutated after it crosses a boundary, so a
   worker can never "fix up" a message in place and hide a schema drift.
+
+### Adding agents was a version bump, not an edit
+
+Agent nodes, skills, memory and the design conversation arrived as **v2**, added
+alongside v1 rather than modifying it. That is the gate working as intended: the
+fingerprint lock made changing `WorkflowGraph` in place impossible without an
+approved bump, so the change had to be a new version — which is also what lets a
+deployment mid-rollout hold workers on both.
+
+Two contracts are deliberately narrower than they could be:
+
+- **`SkillProposal` cannot carry an id, a tenant, an origin or usage counters.**
+  A synthesised skill is therefore structurally incapable of claiming to be a
+  built-in or of overwriting another skill's history — the registry assigns all
+  of those. The narrowing *is* the security property.
+- **`WorkflowNode` of type `agent` must carry an `agent_id`.** An agent step with
+  nobody to run it is rejected at construction rather than failing mid-run.
 
 ---
 
@@ -142,6 +160,12 @@ counter together — or rolls all of them back.
 | --- | --- |
 | `test_a_failure_mid_step_rolls_back_every_write` | no partial state, no orphaned logs |
 
+**An agent is one node, so its whole loop is inside one transaction.** A
+redelivered job re-runs the entire agent rather than resuming half of one. That
+keeps this boundary intact without inventing a resumption protocol for the loop,
+and the cost is bounded: any external call a skill makes still passes through
+§3.A's gate, so a re-run cannot fire a side effect twice.
+
 ---
 
 ## What the mandate does not cover, and is still true
@@ -151,6 +175,21 @@ counter together — or rolls all of them back.
   registration. `SERVICE_REQUIRES_WRITE` enforces it at both gateway boundaries.
 - **Tenant isolation on knowledge.** A `knowledge_handle` is an identifier, never
   an authorisation. Retrieval is scoped to the calling tenant on every read.
+- **Tenant and scope isolation on memory.** Every read and write is filtered by
+  tenant, scope and scope id, so one agent's lessons cannot reach another's
+  prompt and one tenant's memory is unreachable from another's. Proved in
+  `test_memory.py::TestRememberAndRecall`.
+- **Agents get no privilege their user lacks.** A skill that calls out requires
+  the run to carry a write scope *and* the host to be allow-listed, exactly as an
+  HTTP node does. A denial is reported to the agent as a failed skill so it can
+  finish another way, rather than killing the run. Proved in
+  `test_skills.py::TestHttpSkillsAreGuarded`.
+- **Synthesis cannot widen what the platform can do.** `_validate_proposal`
+  refuses an HTTP skill outright and refuses a retrieval over a corpus the tenant
+  does not own. If synthesis emitted code, a model that had read a hostile
+  document could write arbitrary logic into a privileged worker and every check
+  above would become bypassable. Proved in
+  `test_skills.py::test_synthesis_may_never_produce_a_network_call`.
 - **Credential redaction.** The log feed deliberately records external call
   payloads, so `logbus._scrub` redacts credential-shaped keys at the single point
   every event passes through.

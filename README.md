@@ -1,9 +1,15 @@
 # AI Cognitive Workflow Platform
 
-A visual builder for multi-step AI agent workflows. Someone who has never written
-code describes a goal in plain language, reviews the workflow the system proposes,
-adjusts it on a canvas, and runs it — watching every step, every model call and
-every decision stream back in real time.
+A builder for multi-step AI agent workflows. Someone who has never written code
+describes a goal in plain language; the system asks only what it cannot work out,
+then decides the steps itself and staffs each one with an agent that has its own
+skills and its own memory. The user reviews that design on a canvas, adjusts it,
+and runs it — watching every step, every skill invocation and every decision
+stream back in real time.
+
+Each run makes the next one better. What an agent learns about its role stays
+with the agent, what a capability learns about being used well stays with the
+skill, and what a workflow establishes stays with the workflow.
 
 The platform runs end to end with **no external infrastructure and no API keys**:
 SQLite, an in-memory broker and a deterministic stub model are the defaults. Each
@@ -17,8 +23,9 @@ make api    # http://localhost:8000  (gateway + inline worker)
 make web    # http://localhost:3000  (canvas)
 ```
 
-Register an account at `localhost:3000`, click **Start from a goal**, type
-*"Plan my weekend trip to Denver"*, and press **Run**.
+Register an account at `localhost:3000`, click **Describe a goal**, type
+*"Plan my weekend trip to Denver"*, answer the one or two things it asks, and
+press **Run**.
 
 ---
 
@@ -26,21 +33,34 @@ Register an account at `localhost:3000`, click **Start from a goal**, type
 
 | Epic | What the user sees | Where it lives |
 | --- | --- | --- |
-| **1 · Requirement diagnosis** | Types a goal, gets a reasoned proposal and a draft workflow | `services/nlp` |
-| **2 · Visual builder** | Drags steps onto a canvas, draws arrows, maps values between them | `web/` |
-| **3 · Memory** | Uploads documents, links a Knowledge Context to a step, previews what it retrieves | `services/knowledge` |
-| **4 · Execution & monitoring** | Presses Run, watches a live log, reads a step-by-step report of *why* the answer came out that way | `services/orchestrator` |
+| **1 · Requirement diagnosis** | States a goal, answers a couple of questions, reviews the agents the system decided on | `services/design` |
+| **2 · Visual builder** | Adjusts the design on a canvas, or assembles one by hand | `web/` |
+| **3 · Memory** | Reads what each agent and skill has learned, corrects it, uploads documents agents can search | `services/memory`, `services/knowledge` |
+| **4 · Execution & monitoring** | Presses Run, watches each agent think and reach for skills, reads a step-by-step report of *why* the answer came out that way | `services/orchestrator`, `services/agents` |
 
-Two properties are load-bearing throughout:
+Four properties are load-bearing throughout:
 
-**Diagnosis reports gaps instead of guessing.** If a goal needs documents that
-have not been uploaded, or an API credential the platform does not have, that is
-returned as a `gap` — not scaffolded as a node that would fail at run time.
+**The system designs the workflow; the user reviews it.** Someone who already
+knows which steps they need does not need this product, and someone who does not
+cannot draw them. So the platform asks what it cannot infer — each question
+carrying *why* it is being asked — then decides the steps itself.
+
+**Every working step is an agent, not a prompt.** It is given an objective and a
+set of skills, and it decides which to use and in what order, seeing each result
+before choosing again. Agents are stored rather than embedded in a graph, so
+improving one improves every workflow that uses it, and its memory has a stable
+identity to accumulate against.
+
+**Missing capabilities are built, within a boundary.** When a design needs a
+skill the tenant does not have, the platform creates it — as a prompt, a search
+over documents the tenant already owns, or a text transform. Never code, and
+never an outbound call: those need a credential and an allow-listed host, which
+are a human's decision, so they are reported as a gap instead.
 
 **A workflow that cannot execute cannot be saved.** Cycles, dangling edges,
-half-wired decisions and retrieval steps with no corpus are rejected by the
-contract during request parsing, so structural problems surface at design time
-rather than mid-run in front of the user.
+half-wired decisions, retrieval steps with no corpus and agent steps with no
+agent are rejected by the contract during request parsing, so structural problems
+surface at design time rather than mid-run in front of the user.
 
 ---
 
@@ -61,10 +81,17 @@ Queue (in-memory | Redis)                    ──► Dead Letter Queue
     ▼
 Worker ── state machine ── node executors ── PostgreSQL / SQLite
                                 │
-                                ├─ LLM Proxy      (any model: local or hosted)
+                                ├─ Agent runtime  ── skills ── LLM Proxy
+                                │      │                         (any model,
+                                │      └─ memory: agent · skill · workflow
+                                │                          local or hosted)
                                 ├─ RAG retrieval  (tenant-scoped)
                                 └─ HTTP connector (default-deny egress, 2PC gated)
 ```
+
+An agent step is one node to the state machine — the loop inside it runs within
+that node's single transaction, so a redelivered job re-runs the whole agent
+rather than resuming half of one.
 
 Every message between those boxes is an instance of a model in
 `packages/cwap_contracts`, the versioned schema registry. Services import those
@@ -109,12 +136,15 @@ packages/
   cwap_common/        Transactions, idempotency, broker, dual gateway, log bus
 services/
   api_gateway/        Auth, routing, run reports, WebSocket log stream
-  nlp/                Goal diagnosis and workflow scaffolding
+  design/             The design conversation: questions, agents, the graph
+  agents/             The agent loop, and agent storage
+  skills/             Built-in skills, synthesis of missing ones, execution
+  memory/             Remember, recall, reinforce, prune — at every scope
   knowledge/          Chunking, embeddings, tenant-scoped RAG
   orchestrator/       State machine, executors, worker, Celery entry point
   llm_proxy/          The only module that talks to a model, any vendor
 web/                  Next.js canvas (React Flow)
-tests/                205 tests, no external services required
+tests/                384 tests, no external services required
 deploy/               Container images
 docs/                 Architecture, contracts, model backends, epics
 ```
@@ -131,6 +161,7 @@ list. The ones that matter:
 | `CWAP_DATABASE_URL` | `sqlite:///./cwap.sqlite3` | a PostgreSQL DSN |
 | `CWAP_BROKER` | `memory` | `redis` (then run the worker separately) |
 | `CWAP_LLM_PROVIDER` | `stub` | `ollama`, `vllm`, `together`, `anthropic`, … |
+| `CWAP_LLM_TOOL_MODE` | `auto` | `native` or `prompted` to force one tool path |
 | `CWAP_JWT_SECRET` | a known dev string | **required** in any deployment |
 | `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node may reach |
 
@@ -184,6 +215,10 @@ RAG embeddings are configured the same way and independently, since a local
 export CWAP_EMBEDDING_PROVIDER=ollama CWAP_EMBEDDING_MODEL=nomic-embed-text
 ```
 
+In the canvas, click the model chip in the header to see every backend the
+platform knows, the models each commonly serves, and which of those have tool
+calling, vision or a reasoning mode.
+
 `services/llm_proxy` is the only module in the codebase that talks to a model.
 Two implementations cover everything: the Anthropic SDK, and one HTTP client for
 every backend speaking the OpenAI chat-completions format.
@@ -194,6 +229,14 @@ that errors or silently drop one the user set, each provider declares its
 capabilities, the canvas renders only the controls that backend honours, and
 anything ignored at run time is logged and recorded on the step. A saved workflow
 keeps knobs for other backends, so it stays portable across models.
+
+Agents need one capability specifically: tool calling. Many capable open-weight
+models never learned it, and tool support is not reliably discoverable up front —
+a hosted API advertises it, a local llama.cpp build may or may not have it. So the
+first agent turn sends `tools`; a rejection that names them downgrades that
+provider permanently to a **prompted JSON protocol** and retries immediately,
+rather than failing the turn. Agents therefore work on every backend, and the
+canvas says which path a step is on rather than implying they are equivalent.
 
 ---
 
@@ -213,10 +256,24 @@ Stated plainly, because each is a deliberate boundary rather than an oversight:
 - **Uploads are plain text only.** PDF and DOCX extraction belongs in its own
   service. Binary uploads are refused with an explanation rather than indexed as
   mojibake that would quietly poison every retrieval.
-- **Goal diagnosis is a deterministic keyword planner.** That is a defensible
-  default — it is predictable, testable, free, and reports what it cannot do —
-  but it will not infer intent the catalogue has never seen. The catalogue in
-  `services/nlp/skills.py` is data, so extending it is an entry, not a rewrite.
+- **Workflow design is a deterministic blueprint, reworded by the model.** The
+  model sharpens each agent's role and objective against the actual goal but does
+  not choose how many agents there are or what they hand to each other. That is
+  deliberate: it makes the design reviewable (the same goal and answers give the
+  same shape) and portable (it works on a small local model, or the offline
+  stub). It also means a goal shaped unlike anything in
+  `services/design/blueprints.py` becomes one capable generalist agent rather
+  than a guessed pipeline. The blueprints are data, so adding a shape is an
+  entry, not a rewrite.
+- **Reflection is mechanical, not introspective.** After a run an agent records
+  which skills worked, which failed, and whether its budget was enough — things
+  the runtime knows for certain. It does not ask the model to write its own
+  lessons, which reliably fills memory with plausible platitudes. The cost is
+  that a genuinely subtle insight goes unrecorded unless a user types it in.
+- **Skill synthesis cannot produce code or network calls.** A synthesised skill
+  is a prompt, a retrieval, a transform, or an ordered composition of those. Any
+  capability that genuinely needs to reach outside the platform is reported as a
+  gap for a human to wire up with a credential and an allow-list entry.
 - **Parallel fan-out is not supported.** Only decision nodes branch, and the two
   paths do not rejoin. Concurrent step execution is a real feature, not a
   configuration flag, and the contract would need a join primitive.

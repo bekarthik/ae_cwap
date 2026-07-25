@@ -105,6 +105,30 @@ class TestTheConversation:
     def test_a_user_can_skip_the_questions_entirely(self):
         assert designed("Sort out our onboarding").stage is DesignStage.DESIGNED
 
+    def test_a_question_left_deliberately_blank_counts_as_answered(self):
+        """Found by clicking through the real UI. "Anything the result must
+        respect?" has no default, so leaving it blank never put its id in the
+        answer set — and the same question came back forever. Saying nothing is
+        an answer, and it has to be representable as one."""
+        first = design("Sort out our onboarding")
+        blank = {question.id: "" for question in first.questions}
+
+        assert design("Sort out our onboarding", answers=blank).stage is DesignStage.DESIGNED
+
+    def test_answering_some_questions_still_asks_the_rest(self):
+        """The flip side: a partially answered turn must not skip ahead, or a
+        client that answers one question loses the others to defaults silently."""
+        first = design("Sort out our onboarding")
+        assert len(first.questions) > 1, "this test needs a multi-question goal"
+
+        partial = {first.questions[0].id: "something"}
+        second = design("Sort out our onboarding", answers=partial)
+
+        assert second.stage is DesignStage.CLARIFYING
+        assert {question.id for question in second.questions} == {
+            question.id for question in first.questions[1:]
+        }
+
     def test_documents_prompt_a_grounding_question_only_when_there_are_some(self):
         without = design("Sort out our onboarding")
         with_docs = design("Sort out our onboarding", knowledge_handles=["kb_1"])

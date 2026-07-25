@@ -17,6 +17,7 @@ export interface NodeData extends Record<string, unknown> {
   nodeType: NodeType;
   params: Record<string, unknown>;
   knowledgeHandle: string | null;
+  agentId: string | null;
 }
 
 export type CanvasNode = Node<NodeData>;
@@ -42,9 +43,17 @@ export const NODE_KINDS: NodeKind[] = [
     defaultParams: { fields: ['goal'], defaults: {} },
   },
   {
+    type: 'agent',
+    label: 'Agent',
+    blurb: 'A role with its own skills and memory. It decides how to get there.',
+    icon: '◆',
+    accent: '#4f46e5',
+    defaultParams: { objective_template: 'Achieve this goal:\n{{goal}}' },
+  },
+  {
     type: 'llm',
     label: 'Think',
-    blurb: 'Ask a model to reason, plan, or write.',
+    blurb: 'One model call. Use an Agent when the step needs to decide anything.',
     icon: '✳',
     accent: '#7c3aed',
     // Both knobs are carried deliberately: the backend honours what it can
@@ -103,6 +112,11 @@ export function kindFor(type: NodeType): NodeKind {
   return NODE_KINDS.find((kind) => kind.type === type) ?? NODE_KINDS[1];
 }
 
+/** Steps that do the work, as opposed to declaring the run's edges. */
+export function isWorkingNode(type: NodeType): boolean {
+  return type !== 'input' && type !== 'output';
+}
+
 export function newId(prefix: string): string {
   const random = Math.random().toString(36).slice(2, 8);
   return `${prefix}_${Date.now().toString(36)}${random}`;
@@ -115,6 +129,7 @@ export function emptyGraph(): WorkflowGraph {
     id: newId('wf'),
     name: 'Untitled workflow',
     version: 1,
+    memory_scope_id: null,
     nodes: [
       {
         id: inputId,
@@ -123,6 +138,7 @@ export function emptyGraph(): WorkflowGraph {
         params: { fields: ['goal'], defaults: {} },
         position: { x: 40, y: 160 },
         knowledge_handle: null,
+        agent_id: null,
       },
       {
         id: outputId,
@@ -131,6 +147,7 @@ export function emptyGraph(): WorkflowGraph {
         params: { result_template: '{{previous}}' },
         position: { x: 460, y: 160 },
         knowledge_handle: null,
+        agent_id: null,
       },
     ],
     edges: [
@@ -159,6 +176,7 @@ export function toCanvas(graph: WorkflowGraph): {
         nodeType: node.type,
         params: node.params ?? {},
         knowledgeHandle: node.knowledge_handle,
+        agentId: node.agent_id,
       },
     })),
     edges: graph.edges.map((edge) => ({
@@ -176,7 +194,7 @@ export function toCanvas(graph: WorkflowGraph): {
 }
 
 export function toGraph(
-  base: Pick<WorkflowGraph, 'id' | 'name' | 'version'>,
+  base: Pick<WorkflowGraph, 'id' | 'name' | 'version' | 'memory_scope_id'>,
   nodes: CanvasNode[],
   edges: CanvasEdge[],
 ): WorkflowGraph {
@@ -189,6 +207,7 @@ export function toGraph(
       params: node.data.params ?? {},
       position: { x: Math.round(node.position.x), y: Math.round(node.position.y) },
       knowledge_handle: node.data.knowledgeHandle ?? null,
+      agent_id: node.data.agentId ?? null,
     })),
     edges: edges.map((edge) => {
       const data = (edge.data ?? {}) as {
@@ -254,6 +273,11 @@ export function describeProblems(graph: WorkflowGraph): string[] {
     if (node.type === 'rag_retrieve' && !node.knowledge_handle) {
       problems.push(`"${node.label || node.id}" needs a Knowledge Context selected.`);
     }
+    if (node.type === 'agent' && !node.agent_id) {
+      problems.push(
+        `"${node.label || node.id}" has no agent assigned. Pick one, or describe the goal again and let the system design it.`,
+      );
+    }
   }
 
   return problems;
@@ -271,6 +295,12 @@ export function defaultBindings(sourceType: NodeType, targetType: NodeType): Rec
   }
   if (sourceType === 'branch') {
     return { previous: '$output.evaluated' };
+  }
+  // An agent almost always wants the original goal alongside the previous
+  // step's work — otherwise a later agent only sees its predecessor's answer
+  // and has to infer what was being asked.
+  if (targetType === 'agent') {
+    return { goal: '$run.input.goal', previous: '$output.text' };
   }
   return { previous: '$output.text' };
 }

@@ -94,6 +94,67 @@ hosted one, and it means someone running entirely offline installs nothing extra
 
 ---
 
+## Picking one from the product
+
+Click the model chip in the canvas header. It lists every backend the platform
+knows — grouped into "on your own hardware" and "hosted" — the models each
+commonly serves, and what each of those can do: tool calling, vision, a reasoning
+mode. Selecting one shows the exact settings to apply.
+
+It shows those settings rather than applying them. The provider is process-wide
+server configuration, and a browser session switching model underneath other
+people's in-flight runs is not something a page should be able to do.
+
+The catalogue in `services/llm_proxy/catalogue.py` is a hint, never a gate. An
+unlisted model still runs — its capabilities are inferred from its name, and
+anything the backend then rejects is handled at run time — so a private
+fine-tune is one keystroke away in the model field.
+
+---
+
+## Tool calling, and agents on models that lack it
+
+An agent loop needs exactly one capability the rest of the platform does not:
+tool calling. Plenty of capable open-weight models never learned it, and whether
+a given server supports it is **not discoverable up front** — a hosted API
+advertises it, a local llama.cpp build may or may not have it, and there is no
+endpoint to ask.
+
+So the first agent turn simply tries:
+
+```
+converse(tools=[…])
+   │
+   ├── 200 → native tool calling. Done.
+   │
+   └── 4xx that is *about* tools and says "unsupported"
+          │
+          ├── downgrade this provider permanently
+          └── retry immediately on the prompted protocol   ← the turn still succeeds
+```
+
+The prompted protocol describes the tools in the system prompt and asks for a
+single JSON object. Anything that does not parse as a call is treated as a final
+answer, so a model that ignores the protocol degrades to a plain response rather
+than erroring, and a hallucinated tool name is never dispatched.
+
+The rejection match is subject-plus-negation ("mentions tools" **and** "says
+unsupported") rather than a list of exact sentences, because every backend
+phrases it differently: *does not support tools*, *tools are unsupported*,
+*unknown field: tools*, *extra inputs are not permitted*. It is deliberately
+strict on the subject: mistaking a rejected API key for a missing capability
+would silently degrade every agent in the deployment and hide the real problem.
+
+`CWAP_LLM_TOOL_MODE` forces the decision when you already know the answer:
+
+| Value | Behaviour |
+| --- | --- |
+| `auto` (default) | try native, downgrade permanently on a tool rejection |
+| `native` | always send `tools`; a rejection surfaces as an error |
+| `prompted` | never send `tools`; use the JSON protocol from the start |
+
+---
+
 ## Capabilities, and why the canvas changes shape
 
 Backends do not accept the same knobs, and the differences are not cosmetic:
@@ -103,6 +164,8 @@ Backends do not accept the same knobs, and the differences are not cosmetic:
 | `effort` | supported | not a concept |
 | `temperature` | **rejected with a 400** | supported |
 | `max_tokens` | supported | supported |
+| tool calling | supported | **varies by model** — see above |
+| vision | model-dependent | model-dependent |
 
 Pretending otherwise would mean either sending a parameter that errors, or
 silently dropping one the user set. The platform does neither:
@@ -158,8 +221,16 @@ one per chunk. Against a local embedding server the difference is minutes.
 - **Lower `max_tokens` on nodes.** Small models are slower per token, and a
   truncated answer is flagged in the run report (`finish_reason: length`) rather
   than passed downstream as if complete.
-- **Keep prompts explicit.** The scaffolder generates prompts that name each
+- **Keep prompts explicit.** The designer generates objectives that name each
   input plainly, which smaller models follow more reliably than terse ones.
+- **Prefer a model with native tool calling for agent steps.** The prompted
+  fallback works everywhere, but a model trained on tool use follows a multi-step
+  plan more reliably. `qwen2.5` and `llama3.1` both have it and both run on a
+  laptop.
+- **Lower the iteration budget on small models.** An agent's budget is its
+  ceiling on model calls; six iterations of a 70B model on modest hardware is a
+  long wait. A budget-exhausted agent still returns its best answer, and records
+  that the budget was too small.
 - **The stub is still there.** `CWAP_LLM_PROVIDER=stub` runs the whole platform
   with no model at all, which is what the test suite uses and what makes the
   execution tests assert on exact outputs.
@@ -173,7 +244,8 @@ curl -s localhost:8000/health                       # provider and model in use
 curl -s localhost:8000/api/runtime -H "Authorization: Bearer $TOKEN" | jq
 ```
 
-`/api/runtime` reports the resolved provider, model, endpoint, capability flags,
-the embedding configuration, and — if the deployment is misconfigured — the exact
-setting to fix. It reports that as data rather than raising, so a bad setting
+`/api/runtime` reports the resolved provider, model, endpoint, capability flags
+(including whether tool calling is native or prompted), the full catalogue of
+providers and models the picker offers, the embedding configuration, and — if the
+deployment is misconfigured — the exact setting to fix. It reports that as data rather than raising, so a bad setting
 shows an actionable message in the UI instead of a 500 on an unrelated page.

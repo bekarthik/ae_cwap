@@ -3,7 +3,14 @@
 import { useMemo } from 'react';
 
 import { kindFor, type CanvasEdge, type CanvasNode } from '@/lib/graph';
-import type { KnowledgeSummary, RuntimeInfo } from '@/lib/types';
+import type {
+  AgentDefinition,
+  KnowledgeSummary,
+  RuntimeInfo,
+  SkillDefinition,
+} from '@/lib/types';
+
+import { MemoryPanel } from './MemoryPanel';
 
 interface Props {
   node: CanvasNode | null;
@@ -11,6 +18,8 @@ interface Props {
   corpora: KnowledgeSummary[];
   /** Drives which generation controls are shown — see GenerationControls. */
   runtime: RuntimeInfo | null;
+  agents: AgentDefinition[];
+  skills: SkillDefinition[];
   onPatchNode: (id: string, patch: Partial<CanvasNode['data']>) => void;
   onPatchParams: (id: string, params: Record<string, unknown>) => void;
   onPatchEdgeBindings: (id: string, bindings: Record<string, string>) => void;
@@ -36,6 +45,8 @@ export function Inspector({
   edge,
   corpora,
   runtime,
+  agents,
+  skills,
   onPatchNode,
   onPatchParams,
   onPatchEdgeBindings,
@@ -61,6 +72,8 @@ export function Inspector({
       node={node}
       corpora={corpora}
       runtime={runtime}
+      agents={agents}
+      skills={skills}
       onPatchNode={onPatchNode}
       onPatchParams={onPatchParams}
       onDelete={onDeleteNode}
@@ -72,6 +85,8 @@ function NodeInspector({
   node,
   corpora,
   runtime,
+  agents,
+  skills,
   onPatchNode,
   onPatchParams,
   onDelete,
@@ -79,6 +94,8 @@ function NodeInspector({
   node: CanvasNode;
   corpora: KnowledgeSummary[];
   runtime: RuntimeInfo | null;
+  agents: AgentDefinition[];
+  skills: SkillDefinition[];
   onPatchNode: Props['onPatchNode'];
   onPatchParams: Props['onPatchParams'];
   onDelete: (id: string) => void;
@@ -141,6 +158,17 @@ function NodeInspector({
             />
           </div>
         </>
+      ) : null}
+
+      {node.data.nodeType === 'agent' ? (
+        <AgentControls
+          node={node}
+          agents={agents}
+          skills={skills}
+          runtime={runtime}
+          onPatchNode={onPatchNode}
+          set={set}
+        />
       ) : null}
 
       {node.data.nodeType === 'llm' ? (
@@ -327,6 +355,121 @@ function NodeInspector({
         Delete step
       </button>
     </div>
+  );
+}
+
+/**
+ * Editing what an agent node is, and seeing what it has become.
+ *
+ * The step's *objective* lives on the node — the same agent can be pointed at a
+ * different job in a different workflow — while its role, skills and memory
+ * belong to the agent itself and are shown read-only here, with a link into the
+ * roster to change them. Keeping that split visible is what stops a user from
+ * editing a shared agent while believing they are editing one step.
+ */
+function AgentControls({
+  node,
+  agents,
+  skills,
+  runtime,
+  onPatchNode,
+  set,
+}: {
+  node: CanvasNode;
+  agents: AgentDefinition[];
+  skills: SkillDefinition[];
+  runtime: RuntimeInfo | null;
+  onPatchNode: Props['onPatchNode'];
+  set: (key: string, value: unknown) => void;
+}) {
+  const params = node.data.params ?? {};
+  const assigned = agents.find((agent) => agent.id === node.data.agentId) ?? null;
+  const toolsNative = runtime?.llm.supports?.tools ?? true;
+
+  return (
+    <>
+      <div className="field">
+        <label htmlFor="agent">Who does this step</label>
+        <select
+          id="agent"
+          value={node.data.agentId ?? ''}
+          onChange={(event) => onPatchNode(node.id, { agentId: event.target.value || null })}
+        >
+          <option value="">— no agent assigned —</option>
+          {agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.name}
+            </option>
+          ))}
+        </select>
+        {agents.length === 0 ? (
+          <div className="hint">
+            No agents yet. Describe a goal and the system will design and staff the
+            whole workflow for you.
+          </div>
+        ) : null}
+      </div>
+
+      <div className="field">
+        <label htmlFor="objective">What it should achieve here</label>
+        <textarea
+          id="objective"
+          rows={5}
+          value={String(params.objective_template ?? '')}
+          onChange={(event) => set('objective_template', event.target.value)}
+        />
+        <div className="hint">
+          Use <code>{'{{name}}'}</code> for any value arriving on an incoming
+          connection — usually <code>{'{{goal}}'}</code> and{' '}
+          <code>{'{{previous}}'}</code>.
+        </div>
+      </div>
+
+      {assigned ? (
+        <>
+          <div className="field">
+            <label>Its role</label>
+            <p className="small muted" style={{ margin: 0 }}>
+              {assigned.role}
+            </p>
+          </div>
+
+          <div className="field">
+            <label>What it can do</label>
+            <div className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+              {assigned.skill_ids.length === 0 ? (
+                <span className="muted small">No skills attached.</span>
+              ) : (
+                assigned.skill_ids.map((id) => (
+                  <span className="chip" key={id}>
+                    {skills.find((skill) => skill.id === id)?.name.replace(/_/g, ' ') ?? id}
+                  </span>
+                ))
+              )}
+            </div>
+            <div className="hint">
+              It picks which of these to use, and in what order. Up to{' '}
+              {assigned.max_iterations} attempts before it must answer with what it
+              has.
+            </div>
+          </div>
+
+          {!toolsNative ? (
+            <div className="notice notice--info">
+              {runtime?.llm.label ?? 'This model'} has no native tool calling, so skills
+              are offered through a prompted protocol instead. It works, but a model
+              with native tools follows a multi-step plan more reliably.
+            </div>
+          ) : null}
+
+          <MemoryPanel
+            scope="agent"
+            scopeId={assigned.id}
+            title="What this agent has learned"
+          />
+        </>
+      ) : null}
+    </>
   );
 }
 

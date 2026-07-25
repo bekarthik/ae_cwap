@@ -389,7 +389,7 @@ def _reflect(
         _remember(
             agent,
             f"Objective of this shape needed more than {agent.max_iterations} iterations: "
-            f"{objective[:200]}",
+            f"{_condense(objective)}",
             MemoryKind.FAILURE,
             context,
         )
@@ -397,7 +397,7 @@ def _reflect(
         ordered = " then ".join(dict.fromkeys(result.skills_used))
         _remember(
             agent,
-            f"For an objective like '{objective[:160]}', {ordered} worked in "
+            f"For an objective like '{_condense(objective)}', {ordered} worked in "
             f"{result.iterations} iteration(s).",
             MemoryKind.LEARNING,
             context,
@@ -410,6 +410,41 @@ def _reflect(
             result.recalled_memory_ids,
             delta=0.2 if result.status == OBJECTIVE_MET else -0.3,
         )
+
+
+#: Long enough to identify what the run was about, short enough that a dozen
+#: recalled lessons do not crowd out the task itself.
+_OBJECTIVE_EXCERPT = 160
+
+#: The section markers a designed objective template uses. Kept here rather than
+#: imported from the design service, because an objective written by hand on the
+#: canvas will not have them and must degrade to plain truncation.
+_GOAL_MARKER = "The goal is:"
+_HANDOFF_MARKER = "The previous agent produced:"
+
+
+def _condense(objective: str) -> str:
+    """One line, no template scaffolding.
+
+    An objective is a rendered template, so it arrives with newlines and a
+    boilerplate preamble that is identical on every run of that role. Storing it
+    raw wastes the excerpt on the part that never varies — the actual subject
+    gets truncated away, and lexical recall then matches on the boilerplate.
+
+    A designed objective marks the goal with "The goal is:" and the upstream
+    agent's work with "The previous agent produced:". Keeping the span between
+    them isolates what this run was actually about; the predecessor's output is
+    dropped because it belongs to that run, not to the lesson.
+    """
+    text = objective
+    if _GOAL_MARKER in text:
+        text = text.split(_GOAL_MARKER, 1)[1]
+    text = text.split(_HANDOFF_MARKER, 1)[0]
+
+    condensed = " ".join(text.split())
+    if len(condensed) <= _OBJECTIVE_EXCERPT:
+        return condensed
+    return condensed[:_OBJECTIVE_EXCERPT].rstrip() + "…"
 
 
 def _remember(

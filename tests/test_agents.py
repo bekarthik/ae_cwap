@@ -280,6 +280,32 @@ class TestAgentMemory:
         stored = memory_service.list_memories(TENANT, MemoryScope.AGENT, researcher.id)
         assert any("summarise" in entry.text for entry in stored)
 
+    def test_a_lesson_records_the_subject_not_the_template(self):
+        """Found by reading real memory after a browser run. A designed objective
+        is mostly boilerplate identical on every run of that role, so storing it
+        raw spends the whole excerpt on the part that never varies and truncates
+        away the thing that identifies the run."""
+        objective = (
+            "Gather everything needed to address this goal. Note what you could not "
+            "establish rather than filling the gap. Constraints: none stated\n\n"
+            "The goal is:\nResearch our competitors and write a short comparison\n\n"
+            "The previous agent produced:\nA long block of upstream work that belongs "
+            "to that run rather than to this lesson."
+        )
+        condensed = runtime._condense(objective)
+
+        assert condensed == "Research our competitors and write a short comparison"
+
+    def test_a_hand_written_objective_still_condenses(self):
+        """A canvas-authored objective has no markers, so it must degrade to
+        plain single-line truncation rather than losing everything."""
+        assert runtime._condense("  Do\n  the   thing  ") == "Do the thing"
+
+    def test_a_very_long_objective_is_excerpted(self):
+        condensed = runtime._condense("word " * 200)
+        assert len(condensed) <= runtime._OBJECTIVE_EXCERPT + 1
+        assert condensed.endswith("…")
+
     def test_the_lesson_reaches_the_next_run(self, researcher):
         """The self-improvement loop: run two starts with run one's lesson already
         in the prompt."""

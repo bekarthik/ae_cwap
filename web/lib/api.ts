@@ -8,13 +8,18 @@
  */
 
 import type {
+  AgentDefinition,
+  DesignResponse,
   KnowledgeSummary,
+  MemoryEntry,
+  MemoryKind,
+  MemoryScope,
   RuntimeInfo,
   RetrievalResult,
   RunReport,
   RunSummary,
-  ScaffoldResponse,
   Session,
+  SkillDefinition,
   WorkflowGraph,
   WorkflowSummary,
 } from './types';
@@ -134,11 +139,70 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
 
-  diagnose: (goal: string, knowledgeHandles: string[] = []) =>
-    request<ScaffoldResponse>('/api/diagnose', {
+  /**
+   * One turn of the design conversation: with no answers it returns the
+   * questions it needs, with answers it returns the finished design.
+   */
+  design: (
+    goal: string,
+    answers: Record<string, string> = {},
+    knowledgeHandles: string[] = [],
+  ) =>
+    request<DesignResponse>('/api/design', {
       method: 'POST',
-      body: JSON.stringify({ goal, knowledge_handles: knowledgeHandles }),
+      body: JSON.stringify({ goal, answers, knowledge_handles: knowledgeHandles }),
     }),
+
+  /** Design from defaults without asking anything. */
+  designDirect: (goal: string, knowledgeHandles: string[] = []) =>
+    request<DesignResponse>('/api/design/direct', {
+      method: 'POST',
+      body: JSON.stringify({ goal, answers: {}, knowledge_handles: knowledgeHandles }),
+    }),
+
+  listAgents: () => request<AgentDefinition[]>('/api/agents'),
+
+  getAgent: (id: string) => request<AgentDefinition>(`/api/agents/${id}`),
+
+  updateAgent: (id: string, agent: Omit<AgentDefinition, 'id' | 'tenant_id' | 'version'>) =>
+    request<AgentDefinition>(`/api/agents/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(agent),
+    }),
+
+  deleteAgent: (id: string) => request<void>(`/api/agents/${id}`, { method: 'DELETE' }),
+
+  listSkills: () => request<SkillDefinition[]>('/api/skills'),
+
+  /** Find a skill for a capability, creating one if none exists. */
+  ensureSkill: (capability: string, context = '') =>
+    request<{ skill: SkillDefinition; created: boolean }>('/api/skills/ensure', {
+      method: 'POST',
+      body: JSON.stringify({ capability, context }),
+    }),
+
+  deleteSkill: (id: string) => request<void>(`/api/skills/${id}`, { method: 'DELETE' }),
+
+  listMemory: (scope: MemoryScope, scopeId: string) =>
+    request<MemoryEntry[]>(
+      `/api/memory?scope=${scope}&scope_id=${encodeURIComponent(scopeId)}`,
+    ),
+
+  /** Tell an agent, a skill or a workflow something directly. */
+  teach: (scope: MemoryScope, scopeId: string, text: string, kind: MemoryKind = 'preference') =>
+    request<MemoryEntry>('/api/memory', {
+      method: 'POST',
+      body: JSON.stringify({ scope, scope_id: scopeId, text, kind }),
+    }),
+
+  forgetMemory: (entryId: string) =>
+    request<void>(`/api/memory/${entryId}`, { method: 'DELETE' }),
+
+  forgetScope: (scope: MemoryScope, scopeId: string) =>
+    request<{ forgotten: number }>(
+      `/api/memory?scope=${scope}&scope_id=${encodeURIComponent(scopeId)}`,
+      { method: 'DELETE' },
+    ),
 
   listWorkflows: () => request<WorkflowSummary[]>('/api/workflows'),
 

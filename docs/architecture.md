@@ -28,26 +28,90 @@ Browser ──PUT /api/workflows/{id}──► Gateway ──► WorkflowGraph (
 
 Validation happens during request parsing. `WorkflowGraph` rejects duplicate ids,
 dangling edges, self-loops, multiple entry points, cycles, over-wide fan-out,
-outbound edges on a result node, and retrieval steps with no corpus. A graph that
-would fail at run time therefore returns a 422 on save.
+outbound edges on a result node, retrieval steps with no corpus, and agent steps
+with no agent. A graph that would fail at run time therefore returns a 422 on
+save.
 
-### Diagnosing a goal
+### Designing a workflow from a goal
 
 ```
-Browser ──POST /api/diagnose──► Gateway ──► nlp.scaffold
+Browser ──POST /api/design──► Gateway ──► design.design
+                                             │
+                                    classify → blueprint
+                                             │
+                              ┌──────────────┴──────────────┐
+                     unanswered questions?            everything known
+                              │                              │
+                     CLARIFYING: what it                     ▼
+                     could not infer, each          plan agents from the
+                     with a stated reason           blueprint (structure)
+                              │                              │
+                          answers ─────────────►   model rewords them (wording)
+                                                             │
+                                                    resolve each agent's skills
+                                                             │
+                                              ┌──────────────┴──────────────┐
+                                        exists / can be built        needs a human
+                                              │                              │
+                                    attached to the agent         gap (shown to the user)
                                               │
-                                   keyword match over the skill catalogue
-                                              │
-                                    ┌─────────┴─────────┐
-                              can wire it up?      cannot wire it up
-                                    │                   │
-                              graph node             gap (shown to the user)
+                                    input → agent → … → output,
+                                    sharing one memory scope
 ```
 
-The scaffolder composes each generated prompt **from the bindings the node will
-actually receive**, so a draft cannot reference a variable that will not exist.
-That invariant is asserted directly in `tests/test_diagnosis.py`, and the
-scaffolded graphs are executed end to end in `tests/test_execution.py`.
+Two boundaries hold this together.
+
+**Structure is deterministic; only wording is model-generated.** A design that
+varied between identical requests could not be reviewed, and one that only
+appeared on a frontier model would make the platform's central promise
+conditional on which model you configured. So `design/blueprints.py` decides how
+many agents there are and what they hand to each other, and the model is asked
+only to sharpen each role and objective against the actual goal. Any failure —
+no model, bad JSON, the wrong number of agents — keeps the deterministic design,
+so the model call can only improve the result.
+
+**Synthesis produces data, never code.** A capability the tenant lacks is built
+as a prompt, a retrieval over a corpus they already own, a text transform, or an
+ordered composition of those — everything a user could have assembled by hand on
+the canvas. If synthesis emitted Python, a model that had read a hostile document
+could write arbitrary code into a privileged worker, and the egress allow-list
+and scope checks would all become bypassable. HTTP skills are refused outright by
+`_validate_proposal` and reported as a gap instead.
+
+Each generated objective is composed **from the bindings the node will actually
+receive**, so a design cannot reference a variable that will not exist. That
+invariant is asserted in `tests/test_design.py`, and the designed graphs are
+executed end to end in `tests/test_execution.py`.
+
+### Running an agent step
+
+```
+node executor ──► agents.runtime.run_agent
+                       │
+                       ├─ recall: agent memory + workflow memory ──► system prompt
+                       │
+                       ├─ loop, up to the agent's iteration budget:
+                       │     model decides ──► tool call? ──► skill executes
+                       │           ▲                              │
+                       │           └──── result fed back ─────────┘
+                       │     no tool call → that is the answer
+                       │
+                       ├─ budget spent → ask once for its best answer so far
+                       │
+                       └─ reflect: skill failures → skill memory
+                                   budget/skill sequence → agent memory
+                                   recalled entries reinforced or weakened
+```
+
+The whole loop runs inside the node's single transaction. A redelivered job
+re-runs the entire agent rather than resuming half of one, which keeps the
+mandate's transactional boundary intact without the agent needing its own
+resumption protocol.
+
+A skill that fails is reported **to the agent**, not raised: it can try different
+arguments or a different capability, which is the entire point of giving it a
+loop. Only a failure that stops the agent running at all — an unreachable model,
+an unusable definition — fails the step.
 
 ### Running a workflow
 
@@ -97,6 +161,34 @@ insertion order. A job redelivered to a different process reconstructs exactly
 the context the original would have had. This is what makes workers fungible and
 lets `docker-compose.yml` run two of them without coordination.
 
+### Memory lives at the scope that owns the lesson
+
+One `memories` table, four scopes. The split is not filing — it decides who
+inherits a lesson:
+
+* A lesson about **using a capability** ("this needs an explicit focus on long
+  inputs") belongs to the skill, so every agent that reaches for it benefits.
+* A lesson about **performing a role** ("this shape of objective needs more than
+  six iterations") belongs to the agent, so it applies in every workflow the
+  agent staffs.
+* A **fact this job established** belongs to the workflow, so the next agent —
+  and the next run — has it.
+
+Reflection is deliberately mechanical rather than introspective. Asking a model
+to write its own lesson after every run reliably fills memory with plausible
+platitudes; the observations actually worth keeping — which skills failed,
+whether the budget was enough, which sequence worked — are things the runtime
+already knows for certain.
+
+Three failure modes get explicit handling, because each turns memory from an
+asset into a liability:
+
+| Failure mode | Handling |
+| --- | --- |
+| The same lesson accumulating every run | A near-identical write reinforces the existing entry instead of adding another |
+| The embedder unavailable or since swapped | Relevance falls back to lexical overlap, topped up with the scope's most-proven entries, rather than returning nothing |
+| A plausible but wrong lesson recalled forever | Recalled entries are weakened after a bad run; below a floor they stop being recalled, and a user can delete them outright |
+
 ### The entry node's defaults become the run's inputs
 
 The Start node merges its declared defaults with whatever the caller supplied,
@@ -116,7 +208,11 @@ self-hosted Qwen, or a hosted Claude.
 
 Two client implementations cover everything, because almost every model server in
 use speaks the OpenAI chat-completions wire format. Adding a backend is an entry
-in `presets.py`, not a new class.
+in `presets.py`, not a new class, and `catalogue.py` records what each common
+model can do — tool calling, vision, a reasoning mode — so the picker offers real
+choices instead of two free-text boxes. An unlisted model still runs: its
+capabilities are inferred from its name, and anything the backend then rejects is
+handled at run time.
 
 The hard part is not transport, it is that backends accept genuinely different
 knobs: current Claude models *reject* `temperature` with a 400, and open models
@@ -126,6 +222,16 @@ only the controls that backend honours; a node keeps knobs meant for other
 backends so a workflow stays portable; and anything ignored at run time is logged
 and recorded on the step, so a run report never implies a setting took effect
 when it did not. Full rationale in [`models.md`](models.md).
+
+Agents need one capability specifically, and it is not reliably discoverable: a
+hosted API advertises tool calling, a local llama.cpp build may or may not have
+it, and asking is not possible. So the first agent turn simply tries. A 4xx that
+is *about* tools and expresses "unsupported" downgrades that provider permanently
+to a prompted JSON protocol and retries within the same call. The match is
+subject-plus-negation rather than a list of exact sentences, because every
+backend phrases it differently — and it is deliberately narrow on the subject,
+since mistaking a rejected API key for a missing capability would silently
+degrade every agent and hide the real problem.
 
 ### Egress is default-deny
 
@@ -147,6 +253,9 @@ on registration.
 | `run_logs` | Durable copy of the streamed feed. `UNIQUE(run_id, seq)`. |
 | `dead_letters` | Parked messages with their precise failure reason. |
 | `documents` / `chunks` | Indexed corpora and their embeddings. |
+| `agents` | Stored agents: role, skills, iteration budget, memory settings, version. |
+| `skills` | Declarative capabilities, with their origin and reliability counters. |
+| `memories` | Every scope's learned entries, with accumulated usefulness. |
 
 Every JSON column is declared with a `JSONB` variant, so the same models run on
 SQLite and PostgreSQL without a second schema definition.

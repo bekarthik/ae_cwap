@@ -28,20 +28,24 @@ import {
   type CanvasNode,
 } from '@/lib/graph';
 import type {
+  AgentDefinition,
   KnowledgeSummary,
   LogEvent,
   NodeType,
   RunReport,
   RunStatus,
   RuntimeInfo,
-  ScaffoldResponse,
   Session,
+  SkillDefinition,
+  WorkflowGraph,
   WorkflowSummary,
 } from '@/lib/types';
 
-import { GoalModal } from './GoalModal';
+import { DesignModal } from './DesignModal';
 import { Inspector } from './Inspector';
+import { ModelPicker } from './ModelPicker';
 import { KnowledgePanel } from './KnowledgePanel';
+import { RosterPanel } from './RosterPanel';
 import { RunPanel } from './RunPanel';
 import { WorkflowNodeCard, type NodeRunState } from './WorkflowNodeCard';
 
@@ -60,29 +64,34 @@ export function Builder(props: Props) {
   );
 }
 
-/** Which model this deployment is wired to, stated where the user can see it. */
-function BackendChip({ runtime }: { runtime: RuntimeInfo }) {
+/**
+ * Which model this deployment is wired to, stated where the user can see it —
+ * and clickable, because "works with any model" is only a real claim if the
+ * alternatives are discoverable from the product rather than the README.
+ */
+function BackendChip({ runtime, onOpen }: { runtime: RuntimeInfo; onOpen: () => void }) {
   const { llm, embeddings } = runtime;
   if (!llm.configured) {
     return (
-      <span className="status-pill" data-status="FAILED" title={llm.error}>
+      <button className="status-pill" data-status="FAILED" title={llm.error} onClick={onOpen}>
         model not configured
-      </span>
+      </button>
     );
   }
   const detail = [
     llm.base_url ? `endpoint ${llm.base_url}` : null,
     embeddings.identity ? `embeddings ${embeddings.identity}` : null,
+    llm.supports.tools ? 'native tools' : 'prompted tool protocol',
     llm.notes || null,
   ]
     .filter(Boolean)
     .join(' · ');
 
   return (
-    <span className="status-pill" title={detail}>
+    <button className="status-pill" title={detail} onClick={onOpen}>
       {llm.label}
       {llm.model ? ` · ${llm.model}` : ''}
-    </span>
+    </button>
   );
 }
 
@@ -92,6 +101,7 @@ function BuilderInner({ session, onSignOut }: Props) {
     id: initial.id,
     name: initial.name,
     version: initial.version,
+    memory_scope_id: initial.memory_scope_id,
   });
 
   const canvas = useMemo(() => toCanvas(initial), [initial]);
@@ -104,7 +114,10 @@ function BuilderInner({ session, onSignOut }: Props) {
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [corpora, setCorpora] = useState<KnowledgeSummary[]>([]);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [agents, setAgents] = useState<AgentDefinition[]>([]);
+  const [skills, setSkills] = useState<SkillDefinition[]>([]);
   const [goalOpen, setGoalOpen] = useState(false);
+  const [modelsOpen, setModelsOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -120,14 +133,19 @@ function BuilderInner({ session, onSignOut }: Props) {
 
   const refreshLists = useCallback(async () => {
     try {
-      const [workflowList, corpusList, runtimeInfo] = await Promise.all([
-        api.listWorkflows(),
-        api.listKnowledge(),
-        api.runtime(),
-      ]);
+      const [workflowList, corpusList, runtimeInfo, agentList, skillList] =
+        await Promise.all([
+          api.listWorkflows(),
+          api.listKnowledge(),
+          api.runtime(),
+          api.listAgents(),
+          api.listSkills(),
+        ]);
       setWorkflows(workflowList);
       setCorpora(corpusList);
       setRuntime(runtimeInfo);
+      setAgents(agentList);
+      setSkills(skillList);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Could not load your workspace.');
     }
@@ -174,6 +192,7 @@ function BuilderInner({ session, onSignOut }: Props) {
             nodeType: type,
             params: structuredClone(kind.defaultParams),
             knowledgeHandle: null,
+            agentId: null,
           },
         },
       ]);
@@ -268,9 +287,14 @@ function BuilderInner({ session, onSignOut }: Props) {
   // ---- workflow persistence ------------------------------------------
 
   const applyGraph = useCallback(
-    (next: ScaffoldResponse['graph']) => {
+    (next: WorkflowGraph) => {
       const converted = toCanvas(next);
-      setMeta({ id: next.id, name: next.name, version: next.version });
+      setMeta({
+        id: next.id,
+        name: next.name,
+        version: next.version,
+        memory_scope_id: next.memory_scope_id,
+      });
       setNodes(converted.nodes);
       setEdges(converted.edges);
       setSelectedNodeId(null);
@@ -393,10 +417,12 @@ function BuilderInner({ session, onSignOut }: Props) {
 
         <div className="spacer" />
 
-        {runtime ? <BackendChip runtime={runtime} /> : null}
+        {runtime ? (
+          <BackendChip runtime={runtime} onOpen={() => setModelsOpen(true)} />
+        ) : null}
 
         <button className="btn" onClick={() => setGoalOpen(true)}>
-          Start from a goal
+          Describe a goal
         </button>
         <button className="btn" onClick={save} disabled={saving}>
           {saving ? 'Saving…' : 'Save'}
@@ -429,6 +455,8 @@ function BuilderInner({ session, onSignOut }: Props) {
               </button>
             ))}
           </div>
+
+          <RosterPanel agents={agents} skills={skills} onChanged={refreshLists} />
 
           <KnowledgePanel corpora={corpora} onChanged={refreshLists} />
 
@@ -523,6 +551,8 @@ function BuilderInner({ session, onSignOut }: Props) {
             edge={selectedEdge}
             corpora={corpora}
             runtime={runtime}
+            agents={agents}
+            skills={skills}
             onPatchNode={patchNode}
             onPatchParams={patchParams}
             onPatchEdgeBindings={patchEdgeBindings}
@@ -533,13 +563,23 @@ function BuilderInner({ session, onSignOut }: Props) {
         </aside>
       </div>
 
+      {modelsOpen && runtime ? (
+        <ModelPicker runtime={runtime} onClose={() => setModelsOpen(false)} />
+      ) : null}
+
       {goalOpen ? (
-        <GoalModal
+        <DesignModal
           onClose={() => setGoalOpen(false)}
-          onAccept={(scaffold) => {
-            applyGraph(scaffold.graph);
+          onAccept={(design) => {
+            if (!design.graph) return;
+            applyGraph(design.graph);
             setGoalOpen(false);
-            setNotice('Draft workflow placed on the canvas — review each step before running.');
+            // The agents and any skills built for them exist now, so the roster
+            // and the Inspector's agent picker must reflect that immediately.
+            void refreshLists();
+            setNotice(
+              `${design.agents.length} agent(s) placed on the canvas — review each one, then run.`,
+            );
           }}
         />
       ) : null}

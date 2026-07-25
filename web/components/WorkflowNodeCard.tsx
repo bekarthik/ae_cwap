@@ -14,6 +14,8 @@ function summarise(nodeType: string, params: Record<string, unknown>): string {
       const fields = (params.fields as string[] | undefined) ?? [];
       return fields.length ? fields.join(', ') : 'no inputs declared';
     }
+    case 'agent':
+      return String(params.objective_template ?? '(no objective set)');
     case 'llm':
       return String(params.prompt_template ?? '(no prompt set)');
     case 'rag_retrieve':
@@ -70,6 +72,15 @@ function WorkflowNodeCardImpl({ data, selected }: NodeProps<CanvasNode>) {
           <div style={{ marginTop: 6 }}>
             <span className="wf-node__badge">
               {data.knowledgeHandle ?? 'no corpus linked'}
+            </span>
+          </div>
+        ) : null}
+        {/* An agent node without an agent cannot run, so say so on the card
+            rather than only at save time. */}
+        {data.nodeType === 'agent' ? (
+          <div style={{ marginTop: 6 }}>
+            <span className="wf-node__badge">
+              {data.agentId ? 'has skills & memory' : 'no agent assigned'}
             </span>
           </div>
         ) : null}
