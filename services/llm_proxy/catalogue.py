@@ -190,6 +190,20 @@ CATALOGUE: dict[str, tuple[ModelCard, ...]] = {
             tools=True, vision=True, context=128_000,
         ),
     ),
+    "gemini": (
+        ModelCard(
+            "gemini-2.0-flash", "Gemini 2.0 Flash",
+            tools=True, vision=True, context=1_000_000,
+            notes="Fast and cheap. Reads images.",
+        ),
+        ModelCard(
+            "gemini-2.5-pro", "Gemini 2.5 Pro",
+            tools=True, vision=True, thinking=True, context=1_000_000,
+        ),
+    ),
+    "xai": (
+        ModelCard("grok-4", "Grok 4", tools=True, vision=True, context=256_000),
+    ),
     "vllm": (),
     # LM Studio serves whatever the user has loaded, so a curated list would be
     # guesswork. Detection against the running server is the answer, and current

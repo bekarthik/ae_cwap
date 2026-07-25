@@ -31,7 +31,7 @@ from typing import Any, Protocol
 
 from cwap_common.settings import get_settings
 
-from llm_proxy import reasoning, streaming
+from llm_proxy import reasoning, streaming, vision
 from llm_proxy.catalogue import capabilities_for, is_catalogued
 from llm_proxy.presets import NATIVE_PROVIDERS, Preset, resolve
 
@@ -413,7 +413,14 @@ class AnthropicProvider:
             "max_tokens": _output_budget(
                 options.max_tokens or settings.llm_max_tokens, self.capabilities
             ),
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": vision.anthropic_content(prompt)
+                    if self.capabilities.supports_vision
+                    else prompt,
+                }
+            ],
             "output_config": {"effort": effort},
             "betas": [self.FALLBACK_BETA],
             "fallbacks": "default",
@@ -474,7 +481,9 @@ class AnthropicProvider:
             "max_tokens": _output_budget(
                 options.max_tokens or settings.llm_max_tokens, self.capabilities
             ),
-            "messages": _to_anthropic_messages(messages),
+            "messages": _to_anthropic_messages(
+                messages, sees=self.capabilities.supports_vision
+            ),
             "output_config": {"effort": effort},
             "betas": [self.FALLBACK_BETA],
             "fallbacks": "default",
@@ -689,10 +698,17 @@ class OpenAICompatibleProvider:
         options = options or GenerationOptions()
         _accepted, ignored = _filter_options(options, self.capabilities)
 
-        messages: list[dict[str, str]] = []
+        messages: list[dict[str, Any]] = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        messages.append(
+            {
+                "role": "user",
+                "content": vision.openai_content(prompt)
+                if self.capabilities.supports_vision
+                else prompt,
+            }
+        )
 
         payload = self._base_payload(options)
         payload["messages"] = messages
@@ -768,7 +784,9 @@ class OpenAICompatibleProvider:
         on_delta: DeltaSink | None = None,
     ) -> LLMCompletion:
         payload = self._base_payload(options)
-        payload["messages"] = _to_openai_messages(messages, system)
+        payload["messages"] = _to_openai_messages(
+            messages, system, sees=self.capabilities.supports_vision
+        )
         if tools:
             payload["tools"] = [
                 {
@@ -838,7 +856,9 @@ class OpenAICompatibleProvider:
         """
         payload = self._base_payload(options)
         payload["messages"] = _to_openai_messages(
-            messages, _prompted_system(system, tools) if tools else system
+            messages,
+            _prompted_system(system, tools) if tools else system,
+            sees=self.capabilities.supports_vision,
         )
 
         # With tools on offer the answer may turn out to be a protocol message
@@ -1500,7 +1520,7 @@ def _loads_arguments(raw: Any) -> dict[str, Any]:
 
 
 def _to_openai_messages(
-    messages: list[ChatMessage], system: str | None
+    messages: list[ChatMessage], system: str | None, *, sees: bool = False
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if system:
@@ -1517,7 +1537,12 @@ def _to_openai_messages(
             )
             continue
 
-        entry: dict[str, Any] = {"role": message.role, "content": message.content or ""}
+        content: Any = message.content or ""
+        if sees and message.role == "user" and content:
+            # A model that can look at a picture should be given the picture,
+            # not a sentence describing where one lives.
+            content = vision.openai_content(content)
+        entry: dict[str, Any] = {"role": message.role, "content": content}
         if message.tool_calls:
             import json  # noqa: PLC0415
 
@@ -1533,7 +1558,9 @@ def _to_openai_messages(
     return out
 
 
-def _to_anthropic_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
+def _to_anthropic_messages(
+    messages: list[ChatMessage], *, sees: bool = False
+) -> list[dict[str, Any]]:
     """Anthropic carries tool results inside a *user* turn as content blocks,
     rather than as a distinct role. Consecutive results are merged into one
     turn, which the API requires."""
@@ -1568,7 +1595,10 @@ def _to_anthropic_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
             out.append({"role": "assistant", "content": blocks})
             continue
 
-        out.append({"role": message.role, "content": message.content or ""})
+        content: Any = message.content or ""
+        if sees and message.role == "user" and content:
+            content = vision.anthropic_content(content)
+        out.append({"role": message.role, "content": content})
 
     return out
 

@@ -236,6 +236,7 @@ def _build(
         )
 
     _note_write_scope(planned, resolved, tenant_id, gaps)
+    planned = _mark_reuse(tenant_id, planned)
     graph = _build_graph(request.goal, planned, resolved, tenant_id, answers, budgets)
 
     return DesignResponse(
@@ -246,6 +247,21 @@ def _build(
         graph=graph,
         notes=_notes(planned, gaps, use_documents, proposed),
     )
+
+
+def _mark_reuse(tenant_id: str, planned: list[PlannedAgent]) -> list[PlannedAgent]:
+    """Say which of these the workspace already has.
+
+    Read before anything is stored, because afterwards every agent exists and
+    the answer is always "reused". A plan that silently reuses is as opaque as
+    one that silently duplicates — the review screen should be able to show
+    which of these are yours already.
+    """
+    marked: list[PlannedAgent] = []
+    for agent in planned:
+        existing = agent_registry.find_by_name(tenant_id, agent.name)
+        marked.append(agent.model_copy(update={"reused": existing is not None}))
+    return marked
 
 
 def _plan_agents(
@@ -807,18 +823,7 @@ def _build_graph(
     previous = "input"
 
     for index, agent in enumerate(planned, start=1):
-        stored = agent_registry.create(
-            tenant_id,
-            name=agent.name,
-            role=agent.role,
-            objective=agent.objective,
-            instructions=_instructions(answers),
-            skill_ids=resolved.get(agent.name, []),
-            # The graph is acyclic, so an agent that must write, check and
-            # correct needs the budget to do it inside its own turn.
-            max_iterations=budgets.get(agent.name, 6),
-            memory=AgentMemoryConfig(),
-        )
+        stored = _agent_for(tenant_id, agent, answers, resolved, budgets)
         node_id = f"agent_{index}"
         nodes.append(
             WorkflowNode(
@@ -889,6 +894,51 @@ def _objective_template(index: int, agent: PlannedAgent) -> str:
     return objective
 
 
+def _agent_for(
+    tenant_id: str,
+    planned: PlannedAgent,
+    answers: dict[str, str],
+    resolved: dict[str, list[str]],
+    budgets: Budgets,
+):
+    """The stored agent this step will run — reused where one already fits.
+
+    Creating unconditionally is what made a workspace fill with near-duplicates:
+    every design minted a new "Researcher", each with its own empty memory, and
+    the roster grew by the size of the team on every plan. That is the opposite
+    of the promise — an agent is supposed to get better across runs, and it
+    cannot if each run gets a fresh one.
+
+    So a name that already exists is reused, and given whatever skills this plan
+    asks for on top of what it already had. What is deliberately *not* touched
+    is its role: an existing agent's description is something a person may have
+    edited, and a planner silently rewriting it would undo that edit without
+    saying so. A reused agent keeps its identity and gains a capability.
+    """
+    wanted = resolved.get(planned.name, [])
+    existing = agent_registry.find_by_name(tenant_id, planned.name)
+    if existing is None:
+        return agent_registry.create(
+            tenant_id,
+            name=planned.name,
+            role=planned.role,
+            objective=planned.objective,
+            instructions=_instructions(answers),
+            skill_ids=wanted,
+            # The graph is acyclic, so an agent that must write, check and
+            # correct needs the budget to do it inside its own turn.
+            max_iterations=budgets.get(planned.name, 6),
+            memory=AgentMemoryConfig(),
+        )
+
+    gained = [skill_id for skill_id in wanted if skill_id not in existing.skill_ids]
+    if not gained:
+        return existing
+    return agent_registry.update(
+        tenant_id, existing.id, skill_ids=[*existing.skill_ids, *gained]
+    )
+
+
 def _instructions(answers: dict[str, str]) -> str:
     parts = []
     if answers.get("audience"):
@@ -909,6 +959,15 @@ def _notes(
     notes = [
         f"{len(planned)} agent(s), each with its own memory. They improve across runs.",
     ]
+    reused = [agent.name for agent in planned if agent.reused]
+    if reused:
+        # Worth saying plainly: these arrive with everything they have already
+        # learned, which is the reason reuse beats a fresh copy.
+        notes.append(
+            f"Reusing {len(reused)} agent(s) you already have — "
+            + ", ".join(reused)
+            + " — so they bring what they have learned with them."
+        )
     if model_proposed:
         notes.append(
             "This goal did not match a known shape, so the team was proposed for it. "

@@ -34,6 +34,7 @@ from cwap_contracts.v4 import (
     WorkflowGraph,
     WorkflowJobPayload,
 )
+from llm_proxy import store
 from llm_proxy.store import acting_for
 
 from orchestrator.executors import ExecutionRequest, NodeExecutionError, executor_for
@@ -46,6 +47,10 @@ from orchestrator.state_machine import (
 from orchestrator.variables import BindingError, RunContext, resolve_bindings
 
 logger = logging.getLogger("cwap.worker")
+
+#: A workflow's memory is a few sentences of context, not a transcript. A whole
+#: report pasted into every future run's prompt would crowd out the actual task.
+OUTCOME_EXCERPT = 600
 
 RUN_PENDING = "PENDING"
 RUN_RUNNING = "RUNNING"
@@ -378,6 +383,8 @@ class Worker:
                 synchronize_session=False,
             )
 
+        self._remember_outcome(payload, result)
+
         log_bus.emit(
             payload.run_id,
             "run.succeeded",
@@ -385,6 +392,55 @@ class Worker:
             data={"result": result, "final_node": payload.node_id},
         )
         log_bus.forget(payload.run_id)
+
+    def _remember_outcome(self, payload: WorkflowJobPayload, result: Any) -> None:
+        """Write what this run produced into the workflow's own memory.
+
+        The third memory layer was half-built: every agent step *read* workflow
+        memory into its prompt, and nothing ever wrote to it, so the layer could
+        only ever hold what a person typed by hand. A workflow that remembers
+        its own outcomes is the difference between "recent runs are context" as
+        a description and as a feature.
+
+        Only on success, and only the answer: a failed run's output is a symptom
+        rather than a lesson, and storing one would teach the next run to repeat
+        it. Failures already reach the agent and skill layers, which is where
+        the actionable part of a failure lives.
+        """
+        # Imported here rather than at module scope: the agent runtime reaches
+        # back into the orchestrator's executors, and a top-level import would
+        # close that circle.
+        from agents.runtime import remember_for_workflow  # noqa: PLC0415
+
+        graph = self._graph_for(payload.run_id)
+        if graph is None:
+            return
+
+        text = _condense_result(result)
+        if not text:
+            return
+
+        try:
+            with store.acting_for(payload.job_context.tenant_id):
+                remember_for_workflow(
+                    payload.job_context.tenant_id,
+                    graph.memory_scope,
+                    text,
+                    run_id=payload.run_id,
+                )
+        except Exception:  # noqa: BLE001 - a lesson is never worth a failed run
+            logger.warning("could not record the run outcome", exc_info=True)
+
+    @staticmethod
+    def _graph_for(run_id: str) -> WorkflowGraph | None:
+        with read_only_session() as session:
+            run = session.get(Run, run_id)
+            if run is None:
+                return None
+            try:
+                return WorkflowGraph.model_validate(run.graph_snapshot)
+            except Exception:  # noqa: BLE001 - a stored graph that will not parse
+                return None
 
     def _fail(self, payload: WorkflowJobPayload, reason: str) -> None:
         with unit_of_work() as session:
@@ -478,3 +534,16 @@ __all__ = [
     "run_to_completion",
     "start_run",
 ]
+
+
+def _condense_result(result: Any) -> str:
+    """The run's answer, short enough to be context rather than a transcript."""
+    if isinstance(result, dict):
+        result = result.get("result", result)
+    text = result if isinstance(result, str) else str(result or "")
+    condensed = " ".join(text.split())
+    if not condensed:
+        return ""
+    if len(condensed) > OUTCOME_EXCERPT:
+        condensed = condensed[:OUTCOME_EXCERPT].rstrip() + "…"
+    return f"A previous run produced: {condensed}"

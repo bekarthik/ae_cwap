@@ -117,6 +117,25 @@ PRESETS: dict[str, Preset] = {
         default_model="accounts/fireworks/models/llama-v3p3-70b-instruct",
         requires_key=True,
     ),
+    "gemini": Preset(
+        key="gemini",
+        label="Google Gemini",
+        # Google publishes an OpenAI-compatible surface alongside its own API,
+        # which is what lets Gemini be a preset rather than a third client.
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        default_model="gemini-2.0-flash",
+        requires_key=True,
+        default_embedding_model="text-embedding-004",
+        notes="Google's OpenAI-compatible endpoint. Key from Google AI Studio.",
+    ),
+    "xai": Preset(
+        key="xai",
+        label="xAI Grok",
+        base_url="https://api.x.ai/v1",
+        default_model="grok-4",
+        requires_key=True,
+        notes="Key from console.x.ai.",
+    ),
     "deepseek": Preset(
         key="deepseek",
         label="DeepSeek",

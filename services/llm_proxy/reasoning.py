@@ -79,6 +79,8 @@ REASONING_FIELDS: dict[str, Callable[[str], dict[str, Any]]] = {
     "together": _openai_style,
     "mistral": _openai_style,
     "openai_compatible": _openai_style,
+    "gemini": _openai_style,
+    "xai": _openai_style,
     "llamacpp": _template_style,
     "tgi": _template_style,
 }
