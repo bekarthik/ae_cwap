@@ -274,6 +274,47 @@ export interface ModelCard {
   supports: { tools: boolean; vision: boolean; thinking: boolean };
 }
 
+/** A model an endpoint actually reported, or one the catalogue suggests. */
+export interface DetectedModel {
+  id: string;
+  label: string;
+  /** True when the catalogue knows it, so the flags are curated not guessed. */
+  known: boolean;
+  notes: string;
+  open_weights?: boolean;
+  supports: { tools: boolean; vision: boolean; thinking: boolean };
+}
+
+export interface ProviderOption {
+  key: string;
+  label: string;
+  requires_key: boolean;
+  local: boolean;
+  base_url: string;
+  default_model: string;
+  notes: string;
+  models: ModelCard[];
+}
+
+export interface StoredModelChoice {
+  provider: string;
+  model: string;
+  base_url: string;
+  /** Whether a credential is saved. Never the credential itself. */
+  has_api_key: boolean;
+  updated_by: string;
+  updated_at: string | null;
+}
+
+export interface ModelConfiguration {
+  active: LlmInfo;
+  /** "tenant" when this workspace has chosen; "deployment" otherwise. */
+  source: 'tenant' | 'deployment';
+  stored: StoredModelChoice | null;
+  allow_custom_endpoints: boolean;
+  providers: ProviderOption[];
+}
+
 export interface AvailableProvider {
   key: string;
   label: string;

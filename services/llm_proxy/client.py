@@ -831,18 +831,31 @@ class OpenAICompatibleProvider:
 # ---------------------------------------------------------------------------
 
 
-def build_provider(settings=None) -> LLMProvider:
-    """Construct the provider named by configuration."""
+def build_provider(
+    settings=None,
+    *,
+    provider: str = "",
+    model: str = "",
+    base_url: str = "",
+    api_key: str = "",
+) -> LLMProvider:
+    """Construct a provider.
+
+    With no overrides this is the deployment default from the environment. The
+    overrides are what a tenant's stored choice, or a "test this connection
+    before I save it" request, passes in — the same construction path either
+    way, so a configuration that tests green is exactly the one that runs.
+    """
     settings = settings or get_settings()
-    name = settings.llm_provider.strip().lower()
+    name = (provider or settings.llm_provider).strip().lower()
 
     if name == "stub":
-        return StubProvider(settings.llm_model or "stub-model")
+        return StubProvider(model or settings.llm_model or "stub-model")
 
     if name == "anthropic":
         return AnthropicProvider(
-            settings.llm_model,
-            api_key=settings.anthropic_api_key,
+            model or settings.llm_model,
+            api_key=api_key or settings.anthropic_api_key,
             timeout=settings.llm_timeout_seconds,
         )
 
@@ -851,49 +864,101 @@ def build_provider(settings=None) -> LLMProvider:
         from llm_proxy.presets import known_providers  # noqa: PLC0415
 
         raise LLMConfigurationError(
-            f"unknown CWAP_LLM_PROVIDER '{settings.llm_provider}'. "
+            f"unknown model provider '{provider or settings.llm_provider}'. "
             f"Expected one of: {', '.join(known_providers())}"
         )
 
-    return _from_preset(preset, settings)
+    return _from_preset(
+        preset, settings, model=model, base_url=base_url, api_key=api_key
+    )
 
 
-def _from_preset(preset: Preset, settings) -> OpenAICompatibleProvider:
-    base_url = settings.llm_base_url or preset.base_url
-    model = settings.llm_model or preset.default_model
-    api_key = settings.llm_api_key
+def _from_preset(
+    preset: Preset, settings, *, model: str = "", base_url: str = "", api_key: str = ""
+) -> OpenAICompatibleProvider:
+    resolved_url = base_url or settings.llm_base_url or preset.base_url
+    resolved_model = model or settings.llm_model or preset.default_model
+    resolved_key = api_key or settings.llm_api_key
 
-    if preset.requires_key and not api_key:
+    if preset.requires_key and not resolved_key:
         raise LLMConfigurationError(
-            f"{preset.label} requires a key; set CWAP_LLM_API_KEY"
+            f"{preset.label} requires an API key. Add one in Models, or set "
+            "CWAP_LLM_API_KEY for the whole deployment."
         )
 
     return OpenAICompatibleProvider(
         provider=preset.key,
-        base_url=base_url,
-        model=model,
-        api_key=api_key,
+        base_url=resolved_url,
+        model=resolved_model,
+        api_key=resolved_key,
         timeout=settings.llm_timeout_seconds,
         label=preset.label,
         notes=preset.notes,
     )
 
 
+def provider_for(config) -> LLMProvider:
+    """Build the provider a stored configuration describes."""
+    return build_provider(
+        provider=config.provider,
+        model=config.model,
+        base_url=config.base_url,
+        api_key=config.api_key,
+    )
+
+
 _provider: LLMProvider | None = None
+#: Providers built from a tenant's stored choice, keyed by that choice. Building
+#: one is cheap but not free (an httpx client, a capability lookup), and an agent
+#: loop asks for a provider on every iteration.
+_tenant_providers: dict[tuple, LLMProvider] = {}
 
 
 def get_provider() -> LLMProvider:
-    """Process-wide provider, chosen by configuration."""
+    """The provider the current work should use.
+
+    A tenant's stored choice wins where there is one; otherwise the deployment
+    default. `reset_provider_cache` still overrides everything, so a test or the
+    dev runner can pin a provider without any of this being in the way.
+    """
     global _provider
-    if _provider is None:
-        _provider = build_provider()
+    if _provider is not None:
+        return _provider
+
+    stored = _stored_config()
+    if stored is not None:
+        key = (stored.provider, stored.model, stored.base_url, stored.api_key)
+        cached = _tenant_providers.get(key)
+        if cached is None:
+            cached = provider_for(stored)
+            _tenant_providers[key] = cached
+        return cached
+
+    _provider = build_provider()
     return _provider
+
+
+def _stored_config():
+    """The current tenant's saved model choice, if any.
+
+    Imported lazily and failure-tolerant on purpose: the proxy must still work
+    before the schema exists (first boot) and in a process with no database at
+    all, falling back to the environment rather than failing the call.
+    """
+    try:
+        from llm_proxy.store import current_tenant, load  # noqa: PLC0415
+
+        tenant = current_tenant()
+        return load(tenant) if tenant else None
+    except Exception:  # noqa: BLE001 - configuration must never break a model call
+        return None
 
 
 def reset_provider_cache(provider: LLMProvider | None = None) -> None:
     """Swap the provider. Used by tests and by the dev runner."""
     global _provider
     _provider = provider
+    _tenant_providers.clear()
 
 
 def describe_provider() -> dict[str, Any]:

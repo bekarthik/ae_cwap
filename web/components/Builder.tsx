@@ -563,8 +563,14 @@ function BuilderInner({ session, onSignOut }: Props) {
         </aside>
       </div>
 
-      {modelsOpen && runtime ? (
-        <ModelPicker runtime={runtime} onClose={() => setModelsOpen(false)} />
+      {modelsOpen ? (
+        <ModelPicker
+          onClose={() => setModelsOpen(false)}
+          // A model change alters what the canvas should offer — an effort
+          // selector against Claude, a temperature slider against Llama — so the
+          // runtime capabilities are re-read rather than left stale.
+          onSaved={() => void refreshLists()}
+        />
       ) : null}
 
       {goalOpen ? (

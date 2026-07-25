@@ -1,36 +1,163 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import type { RuntimeInfo } from '@/lib/types';
+import { ApiError, api } from '@/lib/api';
+import type { DetectedModel, ModelConfiguration, ProviderOption } from '@/lib/types';
 
 interface Props {
-  runtime: RuntimeInfo;
   onClose: () => void;
+  onSaved: () => void;
 }
 
 /**
- * Which model backend this deployment runs, and what else it could run.
+ * Pick a model backend, from the product.
  *
- * The platform is model-agnostic, which is only useful if choosing a model is
- * something a person can actually do. So instead of a documentation page saying
- * "set CWAP_LLM_PROVIDER", this lists the backends people actually run — a model
- * on your own laptop, a self-hosted server, a hosted API — with the models each
- * one commonly serves and what each of those can do.
+ * The platform being model-agnostic is only useful if choosing a model is
+ * something a person can actually do. Previously this listed what was possible
+ * and told you which environment variables to set — which is a documentation
+ * page wearing a dialog's clothes. Now it does the thing:
  *
- * It shows the exact settings to apply rather than applying them itself:
- * the provider is process-wide server configuration, and a running deployment
- * switching models underneath other people's in-flight runs is not something a
- * browser session should be able to do.
+ *   pick a provider → detect what that endpoint actually serves → test it →
+ *   save, and the next run uses it.
+ *
+ * Detection matters because the curated catalogue cannot know what *your* server
+ * has loaded. Testing matters because saving a wrong configuration otherwise
+ * surfaces as a transport error on someone's first workflow, with no way to tell
+ * a bad key from a wrong URL from a model the server does not have.
+ *
+ * The API never returns a stored key, so the field stays blank and empty means
+ * "keep what is saved". Clearing it deliberately is a separate action.
  */
-export function ModelPicker({ runtime, onClose }: Props) {
-  const [selected, setSelected] = useState<string>(runtime.llm.provider);
-  const provider =
-    runtime.available_providers.find((entry) => entry.key === selected) ?? null;
-  const [model, setModel] = useState<string>(runtime.llm.model ?? '');
+export function ModelPicker({ onClose, onSaved }: Props) {
+  const [config, setConfig] = useState<ModelConfiguration | null>(null);
+  const [provider, setProvider] = useState('');
+  const [model, setModel] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [apiKey, setApiKey] = useState('');
 
-  const local = runtime.available_providers.filter((entry) => entry.local);
-  const hosted = runtime.available_providers.filter((entry) => !entry.local);
+  const [detected, setDetected] = useState<DetectedModel[] | null>(null);
+  const [detectError, setDetectError] = useState<string | null>(null);
+  const [test, setTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [busy, setBusy] = useState<'detect' | 'test' | 'save' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const loaded = await api.modelConfig();
+      setConfig(loaded);
+      const initial = loaded.stored?.provider ?? loaded.active.provider;
+      setProvider(initial);
+      setModel(loaded.stored?.model ?? loaded.active.model ?? '');
+      setBaseUrl(loaded.stored?.base_url ?? '');
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : 'Could not load model settings.');
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const selected: ProviderOption | null = useMemo(
+    () => config?.providers.find((entry) => entry.key === provider) ?? null,
+    [config, provider],
+  );
+
+  /** Detected models when we have them, the curated list until then. */
+  const offered: DetectedModel[] = useMemo(() => {
+    if (detected) return detected;
+    return (selected?.models ?? []).map((card) => ({ ...card, known: true }));
+  }, [detected, selected]);
+
+  function choose(key: string) {
+    const next = config?.providers.find((entry) => entry.key === key) ?? null;
+    setProvider(key);
+    setModel(next?.default_model ?? '');
+    setBaseUrl('');
+    setDetected(null);
+    setDetectError(null);
+    setTest(null);
+  }
+
+  async function detect() {
+    setBusy('detect');
+    setDetectError(null);
+    try {
+      const result = await api.detectModels(provider, baseUrl, apiKey);
+      if (result.ok) {
+        setDetected(result.models);
+        if (result.models.length && !result.models.some((m) => m.id === model)) {
+          setModel(result.models[0].id);
+        }
+      } else {
+        setDetected(null);
+        setDetectError(result.error ?? 'Could not reach that endpoint.');
+      }
+    } catch (caught) {
+      setDetectError(caught instanceof ApiError ? caught.message : 'Detection failed.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function runTest() {
+    setBusy('test');
+    setTest(null);
+    try {
+      setTest(await api.testModel(provider, model, baseUrl, apiKey));
+    } catch (caught) {
+      setTest({
+        ok: false,
+        message: caught instanceof ApiError ? caught.message : 'Test failed.',
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function save() {
+    setBusy('save');
+    setError(null);
+    try {
+      // An untouched key field means "keep the stored one", which is the only
+      // sane reading when the API never gave it back.
+      await api.saveModel(provider, model, baseUrl, apiKey || null);
+      await load();
+      setApiKey('');
+      onSaved();
+      onClose();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : 'Could not save.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function revert() {
+    setBusy('save');
+    try {
+      await api.clearModel();
+      await load();
+      onSaved();
+      onClose();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!config) {
+    return (
+      <div className="modal-backdrop" onClick={onClose} role="presentation">
+        <div className="modal" onClick={(event) => event.stopPropagation()}>
+          <p className="muted">{error ?? 'Loading…'}</p>
+        </div>
+      </div>
+    );
+  }
+
+  const local = config.providers.filter((entry) => entry.local);
+  const hosted = config.providers.filter((entry) => !entry.local);
 
   return (
     <div className="modal-backdrop" onClick={onClose} role="presentation">
@@ -43,21 +170,30 @@ export function ModelPicker({ runtime, onClose }: Props) {
       >
         <h2>Models</h2>
         <p className="lede">
-          Everything here runs the same workflows. Agents work on models without
-          native tool calling too — the platform falls back to a prompted protocol
-          automatically.
+          Everything here runs the same workflows. Changes apply to your next run —
+          nothing restarts.
         </p>
+
+        {error ? <div className="notice notice--error">{error}</div> : null}
 
         <div className="notice notice--info">
           <strong>Running now:</strong>{' '}
-          {runtime.llm.configured ? (
+          {config.active.configured ? (
             <>
-              {runtime.llm.label}
-              {runtime.llm.model ? ` · ${runtime.llm.model}` : ''}
-              <Supports supports={runtime.llm.supports} />
+              {config.active.label}
+              {config.active.model ? ` · ${config.active.model}` : ''}
+              {config.source === 'tenant' ? (
+                <span className="chip" style={{ marginLeft: 6 }}>
+                  your setting
+                </span>
+              ) : (
+                <span className="chip" style={{ marginLeft: 6 }}>
+                  deployment default
+                </span>
+              )}
             </>
           ) : (
-            <span>{runtime.llm.error}</span>
+            <span>{config.active.error}</span>
           )}
         </div>
 
@@ -65,76 +201,128 @@ export function ModelPicker({ runtime, onClose }: Props) {
           <div className="picker__providers">
             <p className="panel-title small">On your own hardware</p>
             {local.map((entry) => (
-              <button
+              <ProviderRow
                 key={entry.key}
-                className={`list-item${entry.key === selected ? ' is-active' : ''}`}
-                onClick={() => {
-                  setSelected(entry.key);
-                  setModel(entry.default_model);
-                }}
-              >
-                <span style={{ textAlign: 'left' }}>
-                  <strong>{entry.label}</strong>
-                  <div className="muted small">no key needed</div>
-                </span>
-              </button>
+                entry={entry}
+                active={entry.key === provider}
+                onSelect={() => choose(entry.key)}
+              />
             ))}
 
             <p className="panel-title small" style={{ marginTop: 12 }}>
               Hosted
             </p>
             {hosted.map((entry) => (
-              <button
+              <ProviderRow
                 key={entry.key}
-                className={`list-item${entry.key === selected ? ' is-active' : ''}`}
-                onClick={() => {
-                  setSelected(entry.key);
-                  setModel(entry.default_model);
-                }}
-              >
-                <span style={{ textAlign: 'left' }}>
-                  <strong>{entry.label}</strong>
-                  <div className="muted small">
-                    {entry.requires_key ? 'needs an API key' : 'no key needed'}
-                  </div>
-                </span>
-              </button>
+                entry={entry}
+                active={entry.key === provider}
+                onSelect={() => choose(entry.key)}
+              />
             ))}
           </div>
 
           <div className="picker__models">
-            {provider ? (
+            {selected ? (
               <>
-                <p className="panel-title small">{provider.label}</p>
-                {provider.notes ? <p className="small muted">{provider.notes}</p> : null}
+                <p className="panel-title small">{selected.label}</p>
+                {selected.notes ? <p className="small muted">{selected.notes}</p> : null}
 
-                {provider.models.length === 0 ? (
+                {config.allow_custom_endpoints ? (
+                  <div className="field">
+                    <label htmlFor="base-url">Endpoint</label>
+                    <input
+                      id="base-url"
+                      value={baseUrl}
+                      placeholder={selected.base_url || 'https://your-server/v1'}
+                      onChange={(event) => setBaseUrl(event.target.value)}
+                    />
+                    <div className="hint">
+                      Leave blank for the default. Point it anywhere that speaks the
+                      same API — your own box, a cluster, a proxy.
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="field">
+                  <label htmlFor="api-key">
+                    API key{selected.requires_key ? '' : ' (not needed here)'}
+                  </label>
+                  <input
+                    id="api-key"
+                    type="password"
+                    value={apiKey}
+                    autoComplete="off"
+                    placeholder={
+                      config.stored?.has_api_key && config.stored.provider === provider
+                        ? 'A key is saved — leave blank to keep it'
+                        : selected.requires_key
+                          ? 'Required by this provider'
+                          : 'Optional'
+                    }
+                    onChange={(event) => setApiKey(event.target.value)}
+                  />
+                  <div className="hint">
+                    Stored encrypted and never sent back to the browser.
+                  </div>
+                </div>
+
+                <div className="row">
+                  <button className="btn" onClick={detect} disabled={busy !== null}>
+                    {busy === 'detect' ? 'Looking…' : 'Detect models'}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={runTest}
+                    disabled={busy !== null || !model}
+                  >
+                    {busy === 'test' ? 'Testing…' : 'Test connection'}
+                  </button>
+                </div>
+
+                {detectError ? (
+                  <div className="notice notice--warn">{detectError}</div>
+                ) : null}
+                {test ? (
+                  <div className={`notice ${test.ok ? 'notice--info' : 'notice--error'}`}>
+                    {test.message}
+                  </div>
+                ) : null}
+
+                <p className="panel-title small">
+                  {detected
+                    ? `${detected.length} model(s) on this endpoint`
+                    : 'Commonly used here'}
+                </p>
+
+                {offered.length === 0 ? (
                   <p className="small muted">
-                    This server runs whatever model you loaded into it, so name it
-                    yourself below.
+                    Nothing listed — name the model your server runs below.
                   </p>
                 ) : (
-                  provider.models.map((card) => (
-                    <button
-                      key={card.id}
-                      className={`list-item${card.id === model ? ' is-active' : ''}`}
-                      onClick={() => setModel(card.id)}
-                    >
-                      <span style={{ textAlign: 'left', flex: 1 }}>
-                        <strong>{card.label}</strong>
-                        {card.open_weights ? (
-                          <span className="chip chip--open">open weights</span>
-                        ) : null}
-                        <div className="muted small">{card.id}</div>
-                        {card.notes ? <div className="muted small">{card.notes}</div> : null}
-                        <Supports supports={card.supports} />
-                      </span>
-                    </button>
-                  ))
+                  <div className="picker__list">
+                    {offered.map((card) => (
+                      <button
+                        key={card.id}
+                        className={`list-item${card.id === model ? ' is-active' : ''}`}
+                        onClick={() => setModel(card.id)}
+                      >
+                        <span style={{ textAlign: 'left', flex: 1 }}>
+                          <strong>{card.label}</strong>
+                          {card.open_weights ? (
+                            <span className="chip chip--open">open weights</span>
+                          ) : null}
+                          <div className="muted small">{card.id}</div>
+                          {card.notes ? <div className="muted small">{card.notes}</div> : null}
+                          <Supports supports={card.supports} />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 )}
 
                 <div className="field" style={{ marginTop: 10 }}>
-                  <label htmlFor="model-id">Model id</label>
+                  <label htmlFor="model-id">Model</label>
                   <input
                     id="model-id"
                     value={model}
@@ -143,32 +331,50 @@ export function ModelPicker({ runtime, onClose }: Props) {
                   />
                 </div>
 
-                <p className="panel-title small">To switch, set these and restart</p>
-                <pre className="config">
-                  {[
-                    `CWAP_LLM_PROVIDER=${provider.key}`,
-                    model ? `CWAP_LLM_MODEL=${model}` : null,
-                    provider.requires_key ? 'CWAP_LLM_API_KEY=<your key>' : null,
-                    provider.base_url ? null : 'CWAP_LLM_BASE_URL=<your endpoint>',
-                  ]
-                    .filter(Boolean)
-                    .join('\n')}
-                </pre>
-                <p className="hint">
-                  The provider is server configuration, so it is not switched from the
-                  browser — a running deployment changing model underneath someone
-                  else&apos;s in-flight run is not something a page should be able to do.
-                </p>
+                <div className="row">
+                  <button
+                    className="btn btn--primary"
+                    onClick={save}
+                    disabled={busy !== null || !provider}
+                  >
+                    {busy === 'save' ? 'Saving…' : 'Use this model'}
+                  </button>
+                  {config.source === 'tenant' ? (
+                    <button className="btn" onClick={revert} disabled={busy !== null}>
+                      Back to the default
+                    </button>
+                  ) : null}
+                  <button className="btn btn--ghost" onClick={onClose}>
+                    Cancel
+                  </button>
+                </div>
               </>
             ) : null}
           </div>
         </div>
-
-        <button className="btn btn--block" onClick={onClose}>
-          Close
-        </button>
       </div>
     </div>
+  );
+}
+
+function ProviderRow({
+  entry,
+  active,
+  onSelect,
+}: {
+  entry: ProviderOption;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button className={`list-item${active ? ' is-active' : ''}`} onClick={onSelect}>
+      <span style={{ textAlign: 'left' }}>
+        <strong>{entry.label}</strong>
+        <div className="muted small">
+          {entry.requires_key ? 'needs an API key' : 'no key needed'}
+        </div>
+      </span>
+    </button>
   );
 }
 

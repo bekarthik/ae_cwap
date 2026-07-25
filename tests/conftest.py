@@ -211,3 +211,33 @@ def make_branching_graph() -> WorkflowGraph:
             WorkflowEdge(id="e4", source="decide", target="output_alt", condition=False),
         ],
     )
+
+
+@pytest.fixture
+def client():
+    """The gateway, wired to this test's isolated platform.
+
+    `create_app` runs the lifespan, which would start the inline worker; the
+    fixture above disables it so tests drive the worker explicitly and stay
+    deterministic.
+    """
+    from api_gateway.app import create_app
+    from fastapi.testclient import TestClient
+
+    with TestClient(create_app()) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def auth(client) -> dict[str, str]:
+    """Authorization header for a freshly registered account."""
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "email": "fixture@example.com",
+            "password": "a-sufficiently-long-password",
+            "tenant_id": "tenant-a",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}

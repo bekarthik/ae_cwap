@@ -796,3 +796,9 @@ button.status-pill {
     grid-template-columns: 1fr;
   }
 }
+
+.picker__list {
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}

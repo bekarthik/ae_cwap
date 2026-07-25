@@ -60,6 +60,11 @@ class Settings:
 
     # --- auth --------------------------------------------------------
     jwt_secret: str = field(default_factory=lambda: _env("CWAP_JWT_SECRET", "dev-secret-change-me"))
+    # Encrypts credentials the platform stores on a tenant's behalf (provider API
+    # keys, MCP server headers). Falls back to the JWT secret so a deployment
+    # that already set one thing does not have to set two — but rotating it
+    # invalidates stored credentials, which is why it can be separated.
+    secret_key: str = field(default_factory=lambda: _env("CWAP_SECRET_KEY", ""))
     jwt_algorithm: str = field(default_factory=lambda: _env("CWAP_JWT_ALG", "HS256"))
     jwt_ttl_seconds: int = field(default_factory=lambda: _env_int("CWAP_JWT_TTL", 60 * 60 * 12))
 
@@ -99,6 +104,12 @@ class Settings:
     max_steps_per_run: int = field(default_factory=lambda: _env_int("CWAP_MAX_STEPS", 50))
     http_node_timeout_seconds: int = field(default_factory=lambda: _env_int("CWAP_HTTP_TIMEOUT", 20))
     http_node_allowlist: str = field(default_factory=lambda: _env("CWAP_HTTP_ALLOWLIST", ""))
+    # Lets a tenant point the platform at its own model endpoint from the UI.
+    # Off by default: a stored base URL is a request this server will make, so
+    # enabling it widens what a tenant can reach from inside the deployment.
+    allow_custom_model_endpoints: bool = field(
+        default_factory=lambda: _env_bool("CWAP_ALLOW_CUSTOM_MODEL_ENDPOINTS", True)
+    )
 
     @property
     def is_postgres(self) -> bool:

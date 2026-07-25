@@ -33,6 +33,7 @@ from cwap_contracts.v2 import (
     WorkflowGraph,
     WorkflowJobPayload,
 )
+from llm_proxy.store import acting_for
 
 from orchestrator.executors import ExecutionRequest, NodeExecutionError, executor_for
 from orchestrator.state_machine import (
@@ -147,6 +148,14 @@ class Worker:
     # ---- one step ------------------------------------------------------
 
     def process(self, payload: WorkflowJobPayload) -> None:
+        # Every model call under this step resolves the *job owner's* chosen
+        # backend, not the worker process's. Scoped to one step so a fungible
+        # worker moving to another tenant's job cannot inherit the previous
+        # tenant's endpoint or credential.
+        with acting_for(payload.job_context.tenant_id):
+            self._process(payload)
+
+    def _process(self, payload: WorkflowJobPayload) -> None:
         run = self._load_run(payload.run_id)
         if run is None:
             log_bus.emit(

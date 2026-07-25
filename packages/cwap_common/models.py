@@ -17,6 +17,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -306,4 +307,73 @@ class Memory(Base):
     embedding_model: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     source_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     usefulness: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ModelSetting(Base):
+    """A tenant's chosen model backend, so it can be changed without a restart.
+
+    Environment variables remain the deployment default and the fallback; a row
+    here is a tenant saying "not that one, this one". Keeping it per tenant
+    rather than global is what stops one tenant's choice — or one tenant's bad
+    API key — from changing what everyone else's workflows run on.
+
+    `api_key` holds ciphertext (see `cwap_common.secrets`) and is never returned
+    by the API. `kind` separates the chat model from the embedding model, which
+    are frequently different services.
+    """
+
+    __tablename__ = "model_settings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "kind", name="uq_model_setting_tenant_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    #: "llm" or "embedding".
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(256), default="", nullable=False)
+    base_url: Mapped[str] = mapped_column(String(512), default="", nullable=False)
+    api_key: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
+    )
+
+
+class MCPServer(Base):
+    """An MCP server a tenant has connected, and how to reach it.
+
+    Transport is either `stdio` (the platform launches a process) or `http`
+    (streamable HTTP to a URL). Those have very different blast radii, which is
+    why `mcp.client` gates them separately: a stdio server is code execution on
+    the worker and must be allow-listed by an operator, while an HTTP server is
+    egress and goes through the host allow-list.
+
+    `config` holds the transport's own fields — command and args, or url — and
+    `credentials` holds anything secret (auth headers, tokens, env values),
+    encrypted at rest and never returned.
+    """
+
+    __tablename__ = "mcp_servers"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_mcp_server_tenant_name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    transport: Mapped[str] = mapped_column(String(16), nullable=False)
+    config: Mapped[dict[str, Any]] = mapped_column(JsonCol, default=dict, nullable=False)
+    credentials: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    #: Cached from the last successful `tools/list`, so the UI can show what a
+    #: server offers without reconnecting on every page load.
+    tools: Mapped[list[dict[str, Any]]] = mapped_column(JsonCol, default=list, nullable=False)
+    last_connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str] = mapped_column(Text, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

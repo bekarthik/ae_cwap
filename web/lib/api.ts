@@ -9,6 +9,8 @@
 
 import type {
   AgentDefinition,
+  DetectedModel,
+  ModelConfiguration,
   DesignResponse,
   KnowledgeSummary,
   MemoryEntry,
@@ -126,6 +128,35 @@ function extractMessage(body: unknown): string | null {
 export const api = {
   /** What model backend this deployment runs, and which knobs it honours. */
   runtime: () => request<RuntimeInfo>('/api/runtime'),
+
+  /** The active model, this workspace's saved choice, and everything on offer. */
+  modelConfig: () => request<ModelConfiguration>('/api/models'),
+
+  /** Ask an endpoint what it actually serves, instead of asking the user. */
+  detectModels: (provider: string, baseUrl = '', apiKey = '') =>
+    request<{ ok: boolean; error?: string; models: DetectedModel[] }>('/api/models/detect', {
+      method: 'POST',
+      body: JSON.stringify({ provider, base_url: baseUrl, api_key: apiKey }),
+    }),
+
+  /** One real completion, so a broken configuration is caught before it is saved. */
+  testModel: (provider: string, model: string, baseUrl = '', apiKey = '') =>
+    request<{ ok: boolean; message: string; model: string; latency_ms: number }>(
+      '/api/models/test',
+      {
+        method: 'POST',
+        body: JSON.stringify({ provider, model, base_url: baseUrl, api_key: apiKey }),
+      },
+    ),
+
+  /** `apiKey: null` keeps the stored credential; `''` clears it. */
+  saveModel: (provider: string, model: string, baseUrl = '', apiKey: string | null = null) =>
+    request<{ stored: unknown; active: unknown }>('/api/models', {
+      method: 'PUT',
+      body: JSON.stringify({ provider, model, base_url: baseUrl, api_key: apiKey }),
+    }),
+
+  clearModel: () => request<{ cleared: boolean }>('/api/models', { method: 'DELETE' }),
 
   register: (email: string, password: string, tenantId = 'default') =>
     request<Session>('/api/auth/register', {

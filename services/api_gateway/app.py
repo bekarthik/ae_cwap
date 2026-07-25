@@ -23,6 +23,7 @@ from cwap_contracts import AuthorizationFailure, ContractViolation, CwapContract
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from llm_proxy.store import acting_for
 
 from api_gateway.routers import ALL_ROUTERS
 from api_gateway.security import bootstrap_demo_user
@@ -96,6 +97,19 @@ async def lifespan(app: FastAPI):
             worker.stop()
 
 
+def _tenant_of(request: Request) -> str:
+    """The tenant on the request's bearer token, or "" if there isn't one."""
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("bearer "):
+        return ""
+    try:
+        from api_gateway.security import decode_token  # noqa: PLC0415 - avoid a cycle
+
+        return decode_token(header.split(" ", 1)[1]).tenant_id
+    except Exception:  # noqa: BLE001 - an unauthenticated request is not an error here
+        return ""
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title=API_TITLE,
@@ -115,6 +129,21 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _scope_model_config_to_the_caller(request: Request, call_next):
+        """Resolve the caller's chosen model backend for the whole request.
+
+        Set here rather than in the auth dependency because a sync endpoint runs
+        in a worker thread: a context variable set inside a dependency is not
+        reliably visible to it, while middleware wraps the entire call. This does
+        no authentication of its own — the routers' dependency remains the only
+        thing that grants access — it only reads which tenant is asking, so a
+        forged token buys nothing beyond a model configuration that will not
+        decrypt into a usable key.
+        """
+        with acting_for(_tenant_of(request)):
+            return await call_next(request)
 
     for router in ALL_ROUTERS:
         app.include_router(router)
