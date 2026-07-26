@@ -148,11 +148,30 @@ did not guess:
 
 ---
 
-## One model per agent
+## One model per agent, and per step
 
-The workspace setting is a default, not a ceiling. Any agent can name its own
-backend, its own model and its own thinking depth, and the ones that name nothing
-keep running on the workspace's — so adding this changed no existing workflow.
+The workspace setting is a default, not a ceiling. Three levels, each inheriting
+from the next when left blank:
+
+| Level | Where | Scope |
+| --- | --- | --- |
+| Step | the Inspector, on a selected agent node | that node, in that workflow |
+| Agent | the agent editor | every workflow using that agent |
+| Workspace | the Models dialog | everything that names nothing |
+
+The step level exists because most model decisions are that local: "the
+synthesis step in *this* workflow needs the big model" is not a statement about
+the agent, and editing the agent to say it changes every other workflow too. The
+only alternative was to clone the agent, which splits its memory in two and makes
+both halves worse — the opposite of what a platform whose parts improve across
+runs is for.
+
+A step override lives in the node's `params`, next to `objective_template`, which
+overrides the agent's objective in exactly the same way and for the same reason.
+
+Any agent can name its own backend, its own model and its own thinking depth, and
+the ones that name nothing keep running on the workspace's — so adding this
+changed no existing workflow.
 
 ```
 agent.model_provider = "ollama"      → this step runs on the local box

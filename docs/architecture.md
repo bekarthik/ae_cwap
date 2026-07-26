@@ -450,6 +450,43 @@ never approves would otherwise spend a run's entire budget, and when the limit i
 reached the last draft stands with the review history recorded on the step, so
 the report says the work went out unapproved rather than implying it passed.
 
+### Which model a step runs on
+
+Three levels, resolved outward until one of them says something:
+
+```
+node.params  →  AgentDefinition  →  the tenant's stored choice  →  the environment
+(this step)     (this agent)        (this workspace)               (this deployment)
+```
+
+`executors._with_node_model` applies the node's override by rebuilding the agent
+through its contract — not `model_copy`, which skips validation. `params` is a
+free-form dict that no schema checks, so a thinking effort of "enormous" typed
+into a node would otherwise travel to the provider and fail there, naming
+neither the node nor the field.
+
+A node override is a copy, never a write: the stored agent keeps its own
+settings, so the override is scoped to the node and disappears with it.
+
+#### The bug this had
+
+`get_provider()` began `if _provider is not None: return _provider`, and
+`_provider` was doing two jobs — a deliberate pin from `reset_provider_cache`,
+*and* a lazy cache of the deployment default assigned whenever anyone asked for
+a provider with no tenant in scope. The second poisons the first. `/health`
+calls `describe_provider()` → `get_provider()` with no tenant, so a container
+healthcheck pinned the whole process to the deployment default seconds after
+boot, and from then on the tenant's stored choice was never looked up. A
+workspace could store LM Studio, display LM Studio, and run every step on the
+stub.
+
+It is worth recording why no test caught it: the suite always pins a provider,
+and with a pin that early return is the correct behaviour. The bug only exists
+in the unpinned case — which is every real deployment and was no test.
+`tests/test_provider_selection.py` is that case.
+
+The two roles are now `_pinned` and `_default`, and only `_pinned` short-circuits.
+
 ### One model per agent
 
 `AgentDefinition` carries `model_provider`, `model_override` and

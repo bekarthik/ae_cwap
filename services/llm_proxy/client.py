@@ -1209,7 +1209,24 @@ def provider_for(config) -> LLMProvider:
     )
 
 
-_provider: LLMProvider | None = None
+#: A provider chosen *deliberately* — by a test, or by the dev runner — which
+#: must win over everything. Set only by `reset_provider_cache`.
+_pinned: LLMProvider | None = None
+
+#: The deployment default, built once. Emphatically **not** a pin: this is what
+#: a caller gets when there is no tenant choice to honour, and it must never
+#: pre-empt the lookup for one.
+#:
+#: These were a single global, and merging them was the bug. Any call made
+#: outside a tenant context — `/health` is one, and a container healthcheck
+#: makes it every few seconds — assigned the deployment default here and the
+#: first line of `get_provider` then returned it to everybody forever. A
+#: workspace could store LM Studio, display LM Studio, and run on the stub.
+#:
+#: It could not be caught by the suite, because the suite always pins, and with
+#: a pin the early return is correct.
+_default: LLMProvider | None = None
+
 #: Providers built from a tenant's stored choice, keyed by that choice. Building
 #: one is cheap but not free (an httpx client, a capability lookup), and an agent
 #: loop asks for a provider on every iteration.
@@ -1223,9 +1240,9 @@ def get_provider() -> LLMProvider:
     default. `reset_provider_cache` still overrides everything, so a test or the
     dev runner can pin a provider without any of this being in the way.
     """
-    global _provider
-    if _provider is not None:
-        return _provider
+    global _default
+    if _pinned is not None:
+        return _pinned
 
     stored = _stored_config()
     if stored is not None:
@@ -1242,8 +1259,9 @@ def get_provider() -> LLMProvider:
             _tenant_providers[key] = cached
         return cached
 
-    _provider = build_provider()
-    return _provider
+    if _default is None:
+        _default = build_provider()
+    return _default
 
 
 def provider_for_choice(provider: str, model: str = "") -> LLMProvider:
@@ -1259,8 +1277,8 @@ def provider_for_choice(provider: str, model: str = "") -> LLMProvider:
     A pinned provider (`reset_provider_cache`) still wins, so a test or the dev
     runner is never routed somewhere it did not choose.
     """
-    if _provider is not None:
-        return _provider
+    if _pinned is not None:
+        return _pinned
 
     name = provider.strip().lower()
     if not name:
@@ -1315,9 +1333,15 @@ def _stored_config():
 
 
 def reset_provider_cache(provider: LLMProvider | None = None) -> None:
-    """Swap the provider. Used by tests and by the dev runner."""
-    global _provider
-    _provider = provider
+    """Swap the pinned provider. Used by tests and by the dev runner.
+
+    Clears the deployment default too: unpinning is how a test says "go back to
+    resolving this properly", and a default built under the previous settings
+    would quietly outlive them.
+    """
+    global _pinned, _default
+    _pinned = provider
+    _default = None
     _tenant_providers.clear()
 
 

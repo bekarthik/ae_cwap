@@ -259,12 +259,58 @@ def _optional_float(value: Any) -> float | None:
 # ---------------------------------------------------------------------------
 
 
+#: Per-node overrides of what the stored agent says about its model.
+#:
+#: The node level is where "run *this step* somewhere else" belongs. Changing
+#: the agent definition changes every workflow that uses it, which is right for
+#: its role and its skills and wrong for a decision as local as "the summarise
+#: step in this one workflow should use the big model". A user who only wanted
+#: the latter had to either edit the shared agent or clone it.
+#:
+#: Carried in `params` rather than as contract fields, because `params` is
+#: already the executor-specific half of a node and already holds
+#: `objective_template`, which overrides the agent's objective in exactly the
+#: same way and for exactly the same reason.
+_MODEL_OVERRIDES = ("model_provider", "model_override", "thinking_effort")
+
+
+def _with_node_model(agent, params: dict[str, Any], node_id: str):
+    """The agent as this node wants it — same identity, possibly another model.
+
+    A copy, never a write: the stored agent keeps its own settings, so a node
+    override is scoped to the node and disappears with it. Blank means "inherit",
+    at both levels, so an untouched node behaves exactly as it did before this
+    existed.
+
+    Rebuilt through the contract rather than with `model_copy`, which skips
+    validation. `params` is a free-form dict that no schema checks, so a
+    thinking effort of "enormous" typed into a node would otherwise travel all
+    the way to the provider and fail there, naming neither the node nor the
+    field.
+    """
+    changes = {
+        field: str(params[field]).strip()
+        for field in _MODEL_OVERRIDES
+        if str(params.get(field) or "").strip()
+    }
+    if not changes:
+        return agent
+
+    try:
+        return type(agent).model_validate({**agent.model_dump(mode="json"), **changes})
+    except ValueError as exc:
+        raise NodeExecutionError(
+            f"node '{node_id}' overrides the model with something invalid: {exc}"
+        ) from exc
+
+
 def execute_agent(request: ExecutionRequest) -> ExecutionOutcome:
     """Run a stored agent against an objective built from this node's inputs.
 
-    The node holds the objective template and nothing else. Everything that makes
-    the agent what it is — its role, its skills, its memory — lives on the stored
-    agent, so improving it improves every workflow that uses it.
+    The node holds the objective template, an optional model override, and
+    nothing else. Everything that makes the agent what it is — its role, its
+    skills, its memory — lives on the stored agent, so improving it improves
+    every workflow that uses it.
     """
     from agents import registry as agent_registry  # noqa: PLC0415 - avoid import cycle
     from agents import runtime as agent_runtime  # noqa: PLC0415
@@ -281,6 +327,7 @@ def execute_agent(request: ExecutionRequest) -> ExecutionOutcome:
         ) from exc
 
     params = node.params or {}
+    agent = _with_node_model(agent, params, node.id)
     template = params.get("objective_template")
     objective = (
         render_template(template, request.inputs)

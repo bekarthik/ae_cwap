@@ -298,11 +298,23 @@ an image block rather than twenty-eight characters describing a chart — but on
 when the model reports vision, since image blocks to a text model are a 400 on
 most servers and silently dropped content on the rest.
 
-**Each agent may run somewhere else.** Open an agent and set its provider, model
-and thinking depth; leave them blank and it uses the workspace's. The credential
-comes from what the workspace saved *for that provider*, so a key entered for one
-backend is never sent to another's endpoint, and the editor says up front which
-backends this workspace can actually reach.
+**The model is chosen at three levels, each inheriting from the next.**
+
+```
+step  →  agent  →  workspace
+```
+
+Open an agent and set its provider, model and thinking depth, and every workflow
+using it follows. Select a step on the canvas and set *Model for this step*, and
+only that step changes — which is the grain most decisions actually have ("the
+synthesis step in this one workflow needs the big model"). Before this existed
+the only way to vary one step was to clone the agent, splitting its memory in
+two and making both halves worse.
+
+Blank means inherit, at every level, so a workflow nobody has touched behaves
+exactly as it did. The credential comes from what the workspace saved *for that
+provider*, so a key entered for one backend is never sent to another's endpoint,
+and both editors say up front which backends this workspace can actually reach.
 
 ---
 

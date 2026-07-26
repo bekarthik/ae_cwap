@@ -1,11 +1,14 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
+import { api } from '@/lib/api';
 import { kindFor, type CanvasEdge, type CanvasNode } from '@/lib/graph';
 import type {
   AgentDefinition,
   KnowledgeSummary,
+  ModelConfiguration,
+  ProviderOption,
   RuntimeInfo,
   SkillDefinition,
 } from '@/lib/types';
@@ -103,8 +106,15 @@ function NodeInspector({
   const kind = kindFor(node.data.nodeType);
   const params = node.data.params ?? {};
 
-  const set = (key: string, value: unknown) =>
-    onPatchParams(node.id, { ...params, [key]: value });
+  // Both take the whole patch in one call, because `params` here is this
+  // render's snapshot: two `set` calls in one handler would each spread the
+  // *old* params and the second would silently undo the first. Every existing
+  // caller happened to set one key per event, so the trap was there and unsprung
+  // until a control needed to change a provider and clear its model together.
+  const patch = (changes: Record<string, unknown>) =>
+    onPatchParams(node.id, { ...params, ...changes });
+
+  const set = (key: string, value: unknown) => patch({ [key]: value });
 
   return (
     <div className="panel-section">
@@ -168,6 +178,7 @@ function NodeInspector({
           runtime={runtime}
           onPatchNode={onPatchNode}
           set={set}
+          patch={patch}
         />
       ) : null}
 
@@ -374,6 +385,7 @@ function AgentControls({
   runtime,
   onPatchNode,
   set,
+  patch,
 }: {
   node: CanvasNode;
   agents: AgentDefinition[];
@@ -381,6 +393,7 @@ function AgentControls({
   runtime: RuntimeInfo | null;
   onPatchNode: Props['onPatchNode'];
   set: (key: string, value: unknown) => void;
+  patch: (changes: Record<string, unknown>) => void;
 }) {
   const params = node.data.params ?? {};
   const assigned = agents.find((agent) => agent.id === node.data.agentId) ?? null;
@@ -414,6 +427,8 @@ function AgentControls({
           </div>
         ) : null}
       </div>
+
+      <StepModelControls node={node} agent={assigned} patch={patch} />
 
       <ReviewControls node={node} agents={agents} onPatchNode={onPatchNode} />
 
@@ -670,6 +685,119 @@ function EdgeInspector({
  * and a workflow whose cost cannot be bounded before it runs is one nobody can
  * safely press Run on.
  */
+const STEP_EFFORTS = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+
+/**
+ * Which model runs *this step*.
+ *
+ * The agent editor already answered "which model does this agent use", and that
+ * is the wrong grain for a decision as local as "the summarise step in this one
+ * workflow needs the big model". Changing the agent changes every workflow that
+ * uses it; the only way to vary one step was to clone the agent, which splits
+ * its memory in two and quietly makes both halves worse.
+ *
+ * So this overrides the agent for one node, and nowhere else. Three levels, each
+ * inheriting from the next when left blank: step → agent → workspace. That
+ * ordering is the whole feature, and the hint under the control says which level
+ * is actually in force rather than making anyone deduce it.
+ */
+function StepModelControls({
+  node,
+  agent,
+  patch,
+}: {
+  node: CanvasNode;
+  agent: AgentDefinition | null;
+  patch: (changes: Record<string, unknown>) => void;
+}) {
+  const params = node.data.params ?? {};
+  const provider = String(params.model_provider ?? '');
+  const model = String(params.model_override ?? '');
+  const effort = String(params.thinking_effort ?? '');
+
+  const [config, setConfig] = useState<ModelConfiguration | null>(null);
+  useEffect(() => {
+    void api
+      .modelConfig()
+      .then(setConfig)
+      .catch(() => setConfig(null));
+  }, []);
+
+  const chosen: ProviderOption | null =
+    config?.providers.find((entry) => entry.key === provider) ?? null;
+  const reachable =
+    !provider || !chosen?.requires_key || (config?.credentials ?? []).includes(provider);
+
+  // What actually runs if this step is left alone. Worth stating: an agent with
+  // its own backend is not obvious from a canvas node, and someone wondering
+  // why a step is slow should not have to open the agent to find out.
+  const inherited = agent?.model_provider
+    ? `${agent.name} runs on ${agent.model_provider}${
+        agent.model_override ? ` · ${agent.model_override}` : ''
+      }`
+    : "the workspace's model";
+
+  return (
+    <div className="field">
+      <label htmlFor="step-provider">Model for this step</label>
+      <div className="row">
+        <select
+          id="step-provider"
+          value={provider}
+          // Clearing the model alongside the provider is the point of taking a
+          // whole patch: a model id belongs to the backend that serves it, and
+          // carrying `llama3.1` over to Anthropic would be a request that fails.
+          onChange={(event) =>
+            patch({ model_provider: event.target.value, model_override: '' })
+          }
+        >
+          <option value="">— whatever the agent uses —</option>
+          {(config?.providers ?? []).map((entry) => (
+            <option key={entry.key} value={entry.key}>
+              {entry.label}
+            </option>
+          ))}
+        </select>
+        <input
+          aria-label="Model for this step"
+          value={model}
+          disabled={!provider}
+          list="step-model-options"
+          placeholder={provider ? chosen?.default_model || 'model id' : ''}
+          onChange={(event) => patch({ model_override: event.target.value })}
+        />
+        <datalist id="step-model-options">
+          {(chosen?.models ?? []).map((card) => (
+            <option key={card.id} value={card.id}>
+              {card.label}
+            </option>
+          ))}
+        </datalist>
+        {provider ? (
+          <select
+            aria-label="Thinking style for this step"
+            value={effort}
+            onChange={(event) => patch({ thinking_effort: event.target.value })}
+          >
+            {STEP_EFFORTS.map((level) => (
+              <option key={level || 'inherit'} value={level}>
+                {level || 'Inherit'}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
+      <div className="hint">
+        {!provider
+          ? `Left alone, this step runs on ${inherited}. Set it to run just this step somewhere else, without changing the agent everywhere it is used.`
+          : reachable
+            ? `This step runs on ${chosen?.label}, whatever the agent is set to. Other steps are unaffected.`
+            : `No key saved for ${chosen?.label} — add one in Models, or this step will fail when it runs.`}
+      </div>
+    </div>
+  );
+}
+
 function ReviewControls({
   node,
   agents,
