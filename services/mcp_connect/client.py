@@ -495,47 +495,70 @@ async def _preflight(config: MCPServerConfig, credentials: dict, budget: float) 
     }
 
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                min(REACH_TIMEOUT, max(budget, 1.0)),
-                read=min(PREFLIGHT_READ, max(budget, 1.0)),
-            ),
-            follow_redirects=True,
-        ) as probe:
-            answer = await probe.post(config.url, json=body, headers=headers)
+        # Streamed, and the verdict comes from the *headers*. The first version
+        # used `probe.post()`, which buffers the whole body before returning —
+        # and a streamable-HTTP server is entitled to hold the POST's event
+        # stream open, sending keepalive pings. Each ping resets httpx's read
+        # timeout, so the pre-flight sat inside a healthy, chatty connection
+        # forever, and the refusal check it exists to perform never ran.
+        # GitHub's server answers exactly like that.
+        async with (
+            httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    min(REACH_TIMEOUT, max(budget, 1.0)),
+                    read=min(PREFLIGHT_READ, max(budget, 1.0)),
+                ),
+                follow_redirects=True,
+            ) as probe,
+            probe.stream("POST", config.url, json=body, headers=headers) as answer,
+        ):
+                logger.info(
+                    "MCP %s: pre-flight %s %s",
+                    _target(config),
+                    answer.status_code,
+                    answer.headers.get("content-type", "?"),
+                )
+
+                if answer.status_code >= 400:
+                    raise MCPError(
+                        f"{_target(config)} refused the connection: HTTP "
+                        f"{answer.status_code}. It said: {await _said(answer)}"
+                    )
+
+                kind = (
+                    answer.headers.get("content-type", "").split(";")[0].strip().lower()
+                )
+                if kind and not any(kind.startswith(good) for good in _MCP_TYPES):
+                    raise MCPError(
+                        f"that URL answered, but not with MCP (content type {kind}). "
+                        "An MCP endpoint replies as JSON or as an event stream; HTML "
+                        "usually means a login page, a proxy sitting in front of the "
+                        "host, or simply a URL that is not an MCP endpoint"
+                    )
+                # A success body is deliberately never read. It may be an open
+                # event stream, and the SDK — not this probe — is who should be
+                # holding one of those.
     except httpx.HTTPError as exc:
         # A transport fault, which the SDK *does* report well. Let it try, so
         # this probe can never be the reason a working server is refused.
         logger.info("MCP %s: pre-flight could not complete (%s)", _target(config), exc)
         return
 
-    logger.info(
-        "MCP %s: pre-flight %s %s",
-        _target(config),
-        answer.status_code,
-        answer.headers.get("content-type", "?"),
-    )
 
-    if answer.status_code >= 400:
-        raise MCPError(
-            f"{_target(config)} refused the connection: HTTP {answer.status_code}. "
-            f"It said: {_said(answer)}"
-        )
+async def _said(answer: Any) -> str:
+    """What the server put in a refusal's body, trimmed to something quotable.
 
-    kind = answer.headers.get("content-type", "").split(";")[0].strip().lower()
-    if kind and not any(kind.startswith(good) for good in _MCP_TYPES):
-        raise MCPError(
-            f"that URL answered, but not with MCP (content type {kind}). An MCP "
-            "endpoint replies as JSON or as an event stream; HTML usually means a "
-            "login page, a proxy sitting in front of the host, or simply a URL "
-            "that is not an MCP endpoint"
-        )
+    Bounded on its own, because even an error body cannot be trusted to end:
+    the read is what turned the pre-flight itself into a hang once already.
+    """
+    reader = asyncio.ensure_future(answer.aread())
+    done, _ = await asyncio.wait({reader}, timeout=5.0)
+    if reader not in done:
+        reader.cancel()
+        return "(a body that never finished arriving)"
 
-
-def _said(answer: Any) -> str:
-    """What the server put in the body, trimmed to something quotable."""
     try:
-        text = " ".join(answer.text.split())
+        text = " ".join(reader.result().decode(errors="replace").split())
     except Exception:  # noqa: BLE001 - a body we cannot read is not a crash
         return "(an unreadable body)"
     if not text:
@@ -548,6 +571,7 @@ async def _own_connection(
     credentials: dict,
     ready: asyncio.Future,
     stop: asyncio.Event,
+    progress: list[str],
 ) -> None:
     """Hold one connection open for its whole life, in one task.
 
@@ -593,8 +617,10 @@ async def _own_connection(
     try:
         # Before the SDK, so a refusal is reported as a refusal rather than
         # disappearing into a background task.
+        progress.append("sending the pre-flight request")
         await _preflight(config, credentials, deadline - loop.time())
 
+        progress.append("opening the transport")
         async with AsyncExitStack() as stack:
             read, write = await _open_transport(stack, config, credentials)
             session = await stack.enter_async_context(
@@ -602,7 +628,9 @@ async def _own_connection(
             )
 
             try:
+                progress.append(HANDSHAKE[0])
                 await _phase(HANDSHAKE, session.initialize(), deadline - loop.time(), config)
+                progress.append(LISTING[0])
                 listing = await _phase(
                     LISTING, session.list_tools(), deadline - loop.time(), config
                 )
@@ -632,11 +660,39 @@ async def _own_connection(
             raise
 
 
+#: How long past the shared budget the watchdog waits before naming the stage
+#: itself. Small: it exists for the stage that failed to bound itself, and the
+#: bounded ones have all answered by the budget.
+WATCHDOG_SLACK = 5.0
+
+
 async def _connect(config: MCPServerConfig, credentials: dict) -> _Session:
     loop = asyncio.get_running_loop()
     ready: asyncio.Future = loop.create_future()
     stop = asyncio.Event()
-    task = loop.create_task(_own_connection(config, credentials, ready, stop))
+    progress: list[str] = ["preparing to connect"]
+    task = loop.create_task(_own_connection(config, credentials, ready, stop, progress))
+
+    # The watchdog, and the lesson of five rounds of this bug: every round, the
+    # step everyone *knew* couldn't block was the one that blocked — the SDK's
+    # background task swallowing an error, a teardown outliving its caller, the
+    # pre-flight buffering an endless event stream. Each got its own bound, and
+    # each time the next unbounded await fell through to a generic message.
+    #
+    # So the connection now narrates where it is (`progress`), and this single
+    # wait covers *everything* before `ready` resolves. Whatever blocks next —
+    # including code that does not exist yet — fails with its stage named,
+    # rather than proving again that the backstop's sentence is useless.
+    done, _ = await asyncio.wait({ready}, timeout=CONNECT_TIMEOUT + WATCHDOG_SLACK)
+    if ready not in done:
+        stop.set()
+        task.cancel()
+        raise MCPError(
+            f"{_target(config)} stopped responding while {progress[-1]}, and that "
+            "step failed to bound itself — which is a bug worth reporting with "
+            "this exact message. Raise CWAP_MCP_TIMEOUT if the server is "
+            "genuinely slower than the budget."
+        )
 
     try:
         session, tools = await ready

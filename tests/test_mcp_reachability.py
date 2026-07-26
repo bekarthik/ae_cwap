@@ -419,6 +419,113 @@ class TestARefusalIsReportedAsARefusal:
         assert "stopped responding" not in str(raised.value)
 
 
+class TestAKeptAliveStreamCannotTrapThePreflight:
+    """The pre-flight must judge on headers, never on a body that may not end.
+
+    Its first version called `probe.post()`, which buffers the whole body
+    before returning — and a streamable-HTTP server is entitled to hold the
+    POST's event stream open with keepalive pings. Each ping resets httpx's
+    read timeout, so the pre-flight sat inside a healthy, chatty connection
+    forever, and the refusal check it exists to perform never ran. GitHub's
+    remote server answers exactly like this, which is how the check built to
+    end the 70-second mystery became its next cause.
+    """
+
+    @pytest.fixture
+    def dripping(self):
+        """200, correct content type, an event, then pings forever."""
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+
+        def serve() -> None:
+            while True:
+                try:
+                    connection, _ = listener.accept()
+                except OSError:
+                    return
+                connection.recv(65535)
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"Cache-Control: no-cache\r\n"
+                    b"Transfer-Encoding: chunked\r\n\r\n"
+                )
+                try:
+                    frame = b"event: message\ndata: {}\n\n"
+                    connection.sendall(b"%X\r\n" % len(frame) + frame + b"\r\n")
+                    while True:
+                        ping = b": ping\n\n"
+                        connection.sendall(b"%X\r\n" % len(ping) + ping + b"\r\n")
+                        time.sleep(0.2)
+                except OSError:
+                    connection.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        try:
+            yield f"http://127.0.0.1:{listener.getsockname()[1]}/mcp/"
+        finally:
+            listener.close()
+
+    def test_the_preflight_returns_promptly(self, dripping):
+        started = time.monotonic()
+
+        asyncio.run(mcp_client._preflight(http(dripping), {}, 60.0))
+
+        # Headers arrive immediately; nothing here may wait for a stream that
+        # is designed never to end.
+        assert time.monotonic() - started < 5.0
+
+    def test_a_refusals_body_is_still_read_but_bounded(self):
+        """Reading the quote on a 4xx must not reintroduce the same trap."""
+
+        class NeverEnds:
+            async def aread(self):
+                await asyncio.Event().wait()
+
+        said = asyncio.run(mcp_client._said(NeverEnds()))
+
+        assert said == "(a body that never finished arriving)"
+
+
+class TestTheWatchdogNamesTheStage:
+    """Whatever blocks next fails with its stage named, not with the backstop.
+
+    Five rounds of this bug followed one pattern: the step everyone knew could
+    not block was the one that blocked, and the error came from a generic wall
+    that said nothing. The connection now narrates where it is, and a single
+    watchdog covers everything before `ready` resolves — including code that
+    does not exist yet.
+    """
+
+    def test_an_unbounded_stage_is_named(self, monkeypatch):
+        async def wedged_preflight(config, credentials, budget):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(mcp_client, "_preflight", wedged_preflight)
+        monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 2.0)
+
+        with pytest.raises(MCPError) as raised:
+            mcp_client.get_client().probe(http("http://127.0.0.1:9/mcp"), {})
+
+        message = str(raised.value)
+        assert "sending the pre-flight request" in message
+        assert "gave up after" not in message
+
+    def test_it_fires_before_the_backstop(self, monkeypatch):
+        async def wedged_preflight(config, credentials, budget):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(mcp_client, "_preflight", wedged_preflight)
+        monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 2.0)
+        started = time.monotonic()
+
+        with pytest.raises(MCPError):
+            mcp_client.get_client().probe(http("http://127.0.0.1:9/mcp"), {})
+
+        assert time.monotonic() - started < mcp_client.CONNECT_TIMEOUT + mcp_client.GRACE
+
+
 class TestTheBackstopIdentifiesItself:
     """The last-resort message must not read like any other build's message.
 
