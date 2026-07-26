@@ -419,6 +419,87 @@ class TestARefusalIsReportedAsARefusal:
         assert "stopped responding" not in str(raised.value)
 
 
+class TestTheBackstopIdentifiesItself:
+    """The last-resort message must not read like any other build's message.
+
+    Three rounds of a Docker deployment reporting the *same* generic timeout
+    burned most of a day on one question: is the container even running the
+    new code? It was not — but nothing on screen could show that, because the
+    old build's only message and the new build's backstop were the same
+    sentence. They are different sentences now, so the message text alone
+    settles which build produced it.
+    """
+
+    def test_it_does_not_use_the_old_builds_words(self):
+        with pytest.raises(MCPError) as raised:
+            mcp_client._thread.submit(asyncio.sleep(30), 0.2)
+
+        assert "did not respond within" not in str(raised.value)
+
+    def test_it_asks_to_be_reported(self):
+        """Firing at all means a case the specific checks do not cover."""
+        with pytest.raises(MCPError, match="report this message"):
+            mcp_client._thread.submit(asyncio.sleep(30), 0.2)
+
+
+class TestThePlatformsLogsActuallyComeOut:
+    """`cwap.*` loggers must have a handler in the shipped containers.
+
+    The MCP connector wrote down what it tried, what answered, and how long
+    each step took — into a logger with no handler, while the operator debugged
+    against uvicorn's access lines. Everything below WARNING was dropped in
+    exactly the topology the compose file ships.
+    """
+
+    def test_configuring_gives_the_namespace_a_handler(self):
+        import logging
+
+        from cwap_common.diagnostics import NAMESPACE, configure_logging
+
+        logger = logging.getLogger(NAMESPACE)
+        before = list(logger.handlers)
+        try:
+            logger.handlers.clear()
+            configure_logging()
+
+            assert logger.handlers, "the cwap namespace still has no handler"
+        finally:
+            logger.handlers[:] = before
+
+    def test_configuring_twice_does_not_double_every_line(self):
+        import logging
+
+        from cwap_common.diagnostics import NAMESPACE, configure_logging
+
+        logger = logging.getLogger(NAMESPACE)
+        before = list(logger.handlers)
+        try:
+            logger.handlers.clear()
+            configure_logging()
+            configure_logging()
+
+            assert len(logger.handlers) == 1
+        finally:
+            logger.handlers[:] = before
+
+    def test_the_namespace_does_not_also_propagate(self):
+        """Its handler is the whole story — propagating too would print every
+        line twice in any process that also configures the root logger."""
+        import logging
+
+        from cwap_common.diagnostics import NAMESPACE, configure_logging
+
+        logger = logging.getLogger(NAMESPACE)
+        before = list(logger.handlers)
+        try:
+            logger.handlers.clear()
+            configure_logging()
+
+            assert logger.propagate is False
+        finally:
+            logger.handlers[:] = before
+
+
 class TestTheDeadlinesAreOrdered:
     def test_reaching_is_bounded_more_tightly_than_answering(self):
         """So the transport's specific error arrives before the blanket one.

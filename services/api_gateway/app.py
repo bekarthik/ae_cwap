@@ -18,6 +18,7 @@ import threading
 from contextlib import asynccontextmanager
 
 from cwap_common.db import init_db
+from cwap_common.diagnostics import configure_logging
 from cwap_common.logbus import build_relay, log_bus
 from cwap_common.settings import get_settings
 from cwap_contracts import AuthorizationFailure, ContractViolation, CwapContractError
@@ -83,8 +84,29 @@ class InlineWorker:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Before anything else, so the platform's own diagnostics reach the
+    # container log. Without this, everything below WARNING was dropped — a
+    # failing MCP connection wrote down exactly what it tried and what answered,
+    # into a logger with no handler, while the operator debugged against
+    # uvicorn's access lines.
+    configure_logging()
     init_db()
     bootstrap_demo_user()
+
+    # A build fingerprint as much as a status line. Whether the running image
+    # actually contains the connector's diagnostic checks has been a genuine
+    # question during debugging ("pulled the latest code" and a reused Docker
+    # layer look identical from the browser), and an old image cannot print
+    # this line.
+    from mcp_connect import client as mcp_client  # noqa: PLC0415 - avoid cycle at import
+
+    logger.info(
+        "MCP connector ready — pre-flight on; reach %.0fs, handshake+listing %.0fs, "
+        "tool call %.0fs",
+        mcp_client.REACH_TIMEOUT,
+        mcp_client.CONNECT_TIMEOUT,
+        mcp_client.CALL_TIMEOUT,
+    )
 
     # A browser watching a run holds its WebSocket to *this* process, while the
     # events are emitted wherever the worker runs. In a Redis deployment that is

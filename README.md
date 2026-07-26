@@ -377,6 +377,15 @@ the waiting request, so an outright refusal arrives as a hang. The platform
 therefore sends its own `initialize` first, with plain httpx, and quotes the
 answer.
 
+**Each attempt is narrated in the gateway's log** — the pre-flight's verdict
+(`MCP <url>: pre-flight 400 application/json`) and each phase with its elapsed
+time (`finished completing the MCP handshake in 0.4s`). At startup the gateway
+prints `MCP connector ready — pre-flight on; …`; **if that line is missing from
+`docker logs`, the container is running an older image** — `docker compose up
+--build` rebuilds it, and merely restarting after a `git pull` does not. The
+older builds also identify themselves by wording: only they say *"did not
+respond within Ns"*, which the current code never emits.
+
 That last row is a known defect in the MCP client library rather than anything
 about your server ([python-sdk#1941](https://github.com/modelcontextprotocol/python-sdk/issues/1941)):
 a server that declines the *optional* server-to-client stream — GitHub's does,

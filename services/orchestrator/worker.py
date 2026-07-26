@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 
 from cwap_common.db import init_db
+from cwap_common.diagnostics import configure_logging
 from cwap_common.logbus import build_relay, log_bus
 from cwap_common.settings import get_settings
 
@@ -27,6 +28,9 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s %(message)s"
     )
+    # The cwap namespace gets its own handler (and stops propagating), so its
+    # lines appear once whether the host configured the root logger or not.
+    configure_logging()
     settings = get_settings()
 
     init_db()

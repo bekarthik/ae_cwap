@@ -236,10 +236,20 @@ class _LoopThread:
             return future.result(timeout=timeout + GRACE)
         except TimeoutError as exc:
             future.cancel()
+            # The last resort, and deliberately worded unlike anything the
+            # specific checks say. The pre-flight and the per-phase deadlines
+            # answer first in every failure this module knows about, so this
+            # sentence appearing at all means a case they do not cover — and
+            # during the debugging that produced those checks, the question
+            # "is the container even running the new code?" burned hours,
+            # because the old build's message and the new build's backstop
+            # read the same. Now they cannot: the old build says "did not
+            # respond within", and this build says the following.
             raise MCPError(
-                f"the MCP server did not respond within {timeout:.0f}s. "
-                "It accepted the connection and then went quiet; raise "
-                "CWAP_MCP_TIMEOUT if the server is simply slow."
+                f"gave up after {timeout:.0f}s without a specific diagnosis — "
+                "the pre-flight and per-phase checks should have answered "
+                "first, so please report this message. Raise CWAP_MCP_TIMEOUT "
+                "if the server is genuinely slower than that."
             ) from exc
 
     def shutdown(self) -> None:
