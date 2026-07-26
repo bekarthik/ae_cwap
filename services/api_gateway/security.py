@@ -13,12 +13,13 @@ import hmac
 import os
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import jwt
 from cwap_common.db import read_only_session, unit_of_work
 from cwap_common.models import User
+from cwap_common.settings import get_settings
 from cwap_contracts.v4 import JobContext, PermissionRequirement
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -30,8 +31,37 @@ PBKDF2_ROUNDS = 240_000
 DEFAULT_SCOPES = ("READ_WORKFLOWS",)
 
 #: Required by any workflow containing a node that can act on the outside world.
-#: Deliberately *not* granted by default — an operator grants it explicitly.
+#: Who receives it is `CWAP_WRITE_EXTERNAL` — see `scopes_for_new_user`.
 WRITE_EXTERNAL = "WRITE_EXTERNAL"
+
+
+def _is_first_in_tenant(session, tenant_id: str) -> bool:
+    return session.query(User).filter_by(tenant_id=tenant_id).first() is None
+
+
+def scopes_for_new_user(session, tenant_id: str) -> list[str]:
+    """What a newly registered account may do.
+
+    The grant used to be nothing, from anywhere: `WRITE_EXTERNAL` appeared in no
+    registration path, no endpoint, no command and no setting, while the refusal
+    told the user to "ask an administrator to grant it". On a self-hosted
+    install that administrator is the person reading the message, and there was
+    no action they could take. A permission that cannot be granted is not a
+    permission, it is a wall.
+
+    So an operator chooses, and the default is that the first account in a
+    tenant — whoever installed this — gets it. Later accounts do not, which is
+    what keeps the scope meaningful once a workspace has more than one person.
+    """
+    mode = get_settings().write_external_grant
+    if mode == "everyone":
+        outward = True
+    elif mode == "nobody":
+        outward = False
+    else:  # "owner", and anything unrecognised, because closed-ish beats crashing
+        outward = _is_first_in_tenant(session, tenant_id)
+
+    return [*DEFAULT_SCOPES, *([WRITE_EXTERNAL] if outward else [])]
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -92,7 +122,7 @@ def create_user(email: str, password: str, *, tenant_id: str, scopes=None) -> Pr
             email=normalized,
             tenant_id=tenant_id,
             password_hash=hash_password(password),
-            scopes=list(scopes or DEFAULT_SCOPES),
+            scopes=list(scopes or scopes_for_new_user(session, tenant_id)),
         )
         session.add(user)
         session.flush()
@@ -186,15 +216,23 @@ def assert_principal_is_current(principal: Principal) -> Principal:
     Cost is one primary-key read per authenticated request. That is what "the
     token is a claim, the database is the truth" costs, and it is the same read
     the authorisation service was already doing later in the request anyway.
+
+    **The scopes are re-read here too**, and the same argument demands it. They
+    were taken from the token while the authorisation service read them from the
+    database, so the two could disagree: a scope granted after a token was
+    issued did nothing until the user signed out and in, and a scope revoked
+    still passed the gateway's own check and was then refused deep inside the
+    producer with a message about job context. Reading the row we are already
+    fetching costs one more column and removes the disagreement entirely.
     """
     with read_only_session() as session:
-        exists = (
-            session.query(User.id)
+        row = (
+            session.query(User.scopes)
             .filter_by(id=principal.user_id, tenant_id=principal.tenant_id)
             .first()
         )
 
-    if exists is None:
+    if row is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
@@ -203,7 +241,7 @@ def assert_principal_is_current(principal: Principal) -> Principal:
             ),
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return principal
+    return replace(principal, scopes=frozenset(row[0] or []))
 
 
 def current_principal(
@@ -230,6 +268,42 @@ def principal_from_query_token(token: str | None) -> Principal:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="missing token query parameter"
         )
     return assert_principal_is_current(decode_token(token))
+
+
+def grant_owner_scopes() -> list[str]:
+    """Give each tenant's first account the outward scope, if the policy says so.
+
+    Registration alone would only help accounts created from now on, and the
+    consumer-side authorisation re-check reads scopes from the *database* — so
+    a run started by an existing owner would pass the gateway and then be
+    parked in the dead letter queue, which is a worse failure than the one
+    being fixed.
+
+    Idempotent, and safe to run on every boot: it only ever adds the scope to
+    the earliest account in a tenant, and only when it is missing.
+    """
+    if get_settings().write_external_grant == "nobody":
+        return []
+
+    everyone = get_settings().write_external_grant == "everyone"
+    granted: list[str] = []
+    with unit_of_work() as session:
+        tenants = {tenant for (tenant,) in session.query(User.tenant_id).distinct()}
+        for tenant in sorted(tenants):
+            members = (
+                session.query(User)
+                .filter_by(tenant_id=tenant)
+                .order_by(User.created_at, User.id)
+                .all()
+            )
+            for position, user in enumerate(members):
+                if not everyone and position > 0:
+                    break
+                if WRITE_EXTERNAL in (user.scopes or []):
+                    continue
+                user.scopes = [*(user.scopes or []), WRITE_EXTERNAL]
+                granted.append(user.email)
+    return granted
 
 
 def bootstrap_demo_user() -> Principal | None:

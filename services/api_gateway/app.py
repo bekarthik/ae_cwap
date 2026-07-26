@@ -28,7 +28,7 @@ from fastapi.responses import JSONResponse
 from llm_proxy.store import acting_for
 
 from api_gateway.routers import ALL_ROUTERS
-from api_gateway.security import bootstrap_demo_user
+from api_gateway.security import bootstrap_demo_user, grant_owner_scopes
 
 logger = logging.getLogger("cwap.gateway")
 
@@ -92,6 +92,9 @@ async def lifespan(app: FastAPI):
     configure_logging()
     init_db()
     bootstrap_demo_user()
+
+    for email in grant_owner_scopes():
+        logger.info("granted WRITE_EXTERNAL to %s (first account in its workspace)", email)
 
     # A build fingerprint as much as a status line. Whether the running image
     # actually contains the connector's diagnostic checks has been a genuine

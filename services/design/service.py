@@ -705,8 +705,10 @@ def _note_write_scope(
                 blocked_reason=(
                     f"{agent.name} can change things outside the platform "
                     f"({', '.join(skill.name for skill in writers[:3])}), so running "
-                    "this workflow needs the WRITE_EXTERNAL scope. Ask an "
-                    "administrator to grant it — everything else will run without it."
+                    "this workflow needs the WRITE_EXTERNAL scope. A workspace "
+                    "grants that to its first account; whoever runs this "
+                    "deployment can change that with CWAP_WRITE_EXTERNAL. "
+                    "Everything else will run without it."
                 ),
             )
         )

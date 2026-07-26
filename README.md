@@ -194,6 +194,7 @@ list. The ones that matter:
 | `CWAP_LLM_STREAM` | `auto` | `off` only for a proxy that mangles server-sent events |
 | `CWAP_JWT_SECRET` | a known dev string | **required** in any deployment |
 | `CWAP_HTTP_ALLOWLIST` | empty — all outbound calls blocked | hosts an HTTP node or an unlisted MCP server may reach |
+| `CWAP_WRITE_EXTERNAL` | `owner` — a workspace's first account may run outward-acting workflows | `everyone`, or `nobody` to grant it by hand |
 | `CWAP_MCP_DIRECTORY` | `true` — the built-in server list is connectable | `off` to require the allow-list for every host |
 | `CWAP_LLM_TIMEOUT` | `600` seconds | lower it on hosted models, or raise it in Models per workspace |
 | `CWAP_MCP_ALLOWED_COMMANDS` | empty — stdio MCP servers disabled | commands a stdio MCP server may launch |
@@ -358,6 +359,13 @@ A tool that can change something needs the same `WRITE_EXTERNAL` scope an HTTP
 node does and passes the same two-phase gate, so a redelivered step cannot open
 two pull requests. Tools a server marks read-only are exempt — reading a
 repository is not a side effect.
+
+**A workspace's first account holds that scope**, because on a self-hosted
+install the person who registered is the operator, and a permission nothing can
+grant is a wall rather than a permission. Later accounts do not, which is what
+keeps it meaningful once a workspace is shared; `CWAP_WRITE_EXTERNAL` changes
+who gets it. Holding the scope is permission to *ask* — what may actually be
+reached is still `CWAP_HTTP_ALLOWLIST` and the MCP directory, both unchanged.
 
 **When a connection fails, the error says which kind of failure it was.** One
 timeout covering everything reported four different problems with one sentence,

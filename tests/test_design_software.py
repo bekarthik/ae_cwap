@@ -435,7 +435,11 @@ class TestPermissionIsReportedBeforeTheRun:
         blocked = [gap for gap in response.skill_gaps if "WRITE_EXTERNAL" in gap.blocked_reason]
 
         assert blocked, [gap.blocked_reason for gap in response.skill_gaps]
-        assert "administrator" in blocked[0].blocked_reason
+        # It must point at something that can actually be done. It used to say
+        # "ask an administrator", who on a self-hosted install is the person
+        # reading it, and who had no way to grant the scope in any case.
+        assert "CWAP_WRITE_EXTERNAL" in blocked[0].blocked_reason
+        assert "administrator" not in blocked[0].blocked_reason
 
     def test_a_read_only_design_does_not_ask_for_it(self):
         """Demanding the scope for a workflow that only reasons would train

@@ -52,7 +52,7 @@ class TestAuth:
             "/api/auth/login", json={"email": "a@example.com", "password": PASSWORD}
         )
         assert response.status_code == 200
-        assert response.json()["scopes"] == ["READ_WORKFLOWS"]
+        assert "READ_WORKFLOWS" in response.json()["scopes"]
 
     def test_duplicate_registration_is_rejected(self, client, auth):
         response = client.post(
@@ -299,8 +299,8 @@ class TestRuns:
         )
         assert response.status_code == 404
 
-    def test_a_workflow_with_an_external_call_needs_the_write_scope(self, client, auth):
-        """Least privilege: the default grant cannot reach outside the platform."""
+    @staticmethod
+    def _outward_graph():
         graph = make_linear_graph(workflow_id="wf_http").model_dump(mode="json")
         graph["nodes"][1] = {
             "id": "think",
@@ -310,13 +310,41 @@ class TestRuns:
             "position": {"x": 250, "y": 0},
             "knowledge_handle": None,
         }
+        return graph
+
+    def test_an_account_without_the_write_scope_is_refused(self, client, auth):
+        """Least privilege: an account that lacks the grant cannot reach outward.
+
+        The scope is stripped explicitly rather than relied upon to be absent —
+        a workspace's first account now has it, and a test that passes only
+        because nobody was ever granted anything was how a permission nothing
+        could grant went unnoticed.
+        """
+        from cwap_common.db import unit_of_work
+        from cwap_common.models import User
+
+        with unit_of_work() as session:
+            for user in session.query(User).all():
+                user.scopes = ["READ_WORKFLOWS"]
+
         response = client.post(
             "/api/workflows/wf_http/runs",
-            json={"inputs": {"goal": "x"}, "graph": graph},
+            json={"inputs": {"goal": "x"}, "graph": self._outward_graph()},
             headers=auth,
         )
         assert response.status_code == 403
         assert "WRITE_EXTERNAL" in response.json()["detail"]
+
+    def test_the_workspace_owner_may_run_it(self, client, auth):
+        """The case the platform used to make impossible: the person who
+        installed it, running their own outward workflow."""
+        response = client.post(
+            "/api/workflows/wf_http/runs",
+            json={"inputs": {"goal": "x"}, "graph": self._outward_graph()},
+            headers=auth,
+        )
+
+        assert response.status_code == 202, response.text
 
     def test_runs_are_listed_for_the_tenant(self, client, auth):
         workflow_id = self._save_workflow(client, auth)

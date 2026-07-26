@@ -133,6 +133,27 @@ class Settings:
     allow_custom_model_endpoints: bool = field(
         default_factory=lambda: _env_bool("CWAP_ALLOW_CUSTOM_MODEL_ENDPOINTS", True)
     )
+    # Who may run a workflow that acts on the outside world — an HTTP node, or
+    # an agent holding a tool that changes something.
+    #
+    #   owner     the first account in a tenant, and nobody else (the default)
+    #   everyone  every account
+    #   nobody    no account; the scope must be set on the user row by hand
+    #
+    # "owner" rather than "nobody" because the previous default was unreachable:
+    # the scope was granted by nothing, no endpoint or command could grant it,
+    # and the error told the user to "ask an administrator" who, on a
+    # self-hosted install, is the person reading the message. Whoever registers
+    # first has root on the machine the platform runs on; withholding a
+    # permission from them protects nothing.
+    #
+    # It does not open egress. An HTTP node still needs CWAP_HTTP_ALLOWLIST, an
+    # MCP host still needs the directory or the allow-list, and every external
+    # call still passes the two-phase idempotency gate. This decides *who may
+    # ask*, not *what may be reached*.
+    write_external_grant: str = field(
+        default_factory=lambda: _env("CWAP_WRITE_EXTERNAL", "owner").strip().lower()
+    )
 
     @property
     def is_postgres(self) -> bool:

@@ -48,6 +48,24 @@ def _needs_write_scope(graph: WorkflowGraph, tenant_id: str) -> bool:
     return any(_agent_can_reach_outward(node, tenant_id) for node in graph.nodes)
 
 
+def _outward_steps(graph, tenant_id: str) -> str:
+    """Which steps need the scope, phrased for the person reading the refusal.
+
+    "a step" is true and useless on a canvas with nine of them; the whole point
+    of being refused is knowing what to change.
+    """
+    named = [
+        node.label or node.id
+        for node in graph.nodes
+        if node.type is NodeType.HTTP_REQUEST or _agent_can_reach_outward(node, tenant_id)
+    ]
+    if not named:  # pragma: no cover - only reachable if the two checks disagree
+        return "one of its steps"
+    if len(named) == 1:
+        return f"the step '{named[0]}'"
+    return "the steps " + ", ".join(f"'{name}'" for name in named)
+
+
 def _agent_can_reach_outward(node, tenant_id: str) -> bool:
     from agents import registry as agent_registry  # noqa: PLC0415
     from cwap_contracts.v4 import SIDE_EFFECTING_KINDS  # noqa: PLC0415
@@ -90,11 +108,20 @@ def create_run(
     if needs_write and WRITE_EXTERNAL not in principal.scopes:
         # Fail here with an explanation rather than letting the producer's
         # authorisation pre-check reject it with a generic 403.
+        #
+        # Naming the step and the actual remedy, because the previous wording —
+        # "ask an administrator to grant it" — described a person who does not
+        # exist on a self-hosted install and an action that existed nowhere in
+        # the codebase.
+        culprits = _outward_steps(graph, principal.tenant_id)
         raise HTTPException(
             status_code=403,
             detail=(
-                "this workflow contains a step that calls an external service, which "
-                f"requires the '{WRITE_EXTERNAL}' scope. Ask an administrator to grant it."
+                f"your account may not run workflows that act on the outside world, "
+                f"and {culprits} does. This workspace grants that to its first "
+                "account; yours is not it. Whoever runs this deployment can change "
+                "who gets it with CWAP_WRITE_EXTERNAL, or add "
+                f"'{WRITE_EXTERNAL}' to your account's scopes."
             ),
         )
 
