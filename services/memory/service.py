@@ -46,6 +46,31 @@ DEFAULT_CAPACITY = 500
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+#: What `RecallRequest.query` accepts. Asserted against the contract in
+#: `tests/test_memory.py` so the two cannot drift apart silently.
+QUERY_LIMIT = 2000
+
+
+def query_text(text: str) -> str:
+    """Whatever a caller wants to search against, cut to what the contract takes.
+
+    A recall query is a *search key*, not content: it is embedded, compared and
+    thrown away. Losing its tail costs a little precision. Exceeding the
+    contract's limit used to cost the whole run — an agent whose objective ran
+    past 2000 characters died with a Pydantic ValidationError in the middle of
+    executing, which is a spectacular way to punish somebody for writing a
+    detailed task description.
+
+    One function rather than a `[:2000]` at each call site, which is how this
+    happened: the skill path had the slice, the agent path did not, and nothing
+    connected the two.
+
+    Returns "" when there is nothing to search for, because the contract also
+    sets a *minimum* length and a blank query is a caller with nothing to ask,
+    not an error to raise.
+    """
+    return " ".join((text or "").split())[:QUERY_LIMIT]
+
 
 class MemoryError_(RuntimeError):
     """Memory could not be written or read."""

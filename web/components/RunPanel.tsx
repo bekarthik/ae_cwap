@@ -19,11 +19,25 @@ interface Props {
  */
 export function RunPanel({ status, logs, live, report, error }: Props) {
   const logRef = useRef<HTMLDivElement>(null);
+  // Whether the reader is watching the tail. Following unconditionally means
+  // that scrolling up to re-read an earlier step yanks you back to the bottom
+  // on the model's next token — which, against a model writing steadily, makes
+  // the history unreadable for as long as the run lasts.
+  const following = useRef(true);
+
+  const onScroll = () => {
+    const node = logRef.current;
+    if (!node) return;
+    const slack = node.scrollHeight - node.scrollTop - node.clientHeight;
+    following.current = slack < 24;
+  };
 
   useEffect(() => {
     // Follow the tail as events stream in — including the answer being typed,
     // which is the thing worth watching while a slow model works.
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+    if (following.current) {
+      logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+    }
   }, [logs.length, live?.text]);
 
   if (!status && !error) {
@@ -41,6 +55,8 @@ export function RunPanel({ status, logs, live, report, error }: Props) {
   const finalResult = report?.result
     ? (report.result.result ?? report.result)
     : null;
+  const resultText =
+    typeof finalResult === 'string' ? finalResult : JSON.stringify(finalResult, null, 2);
 
   return (
     <>
@@ -64,7 +80,7 @@ export function RunPanel({ status, logs, live, report, error }: Props) {
         </div>
       ) : null}
 
-      <div className="log" ref={logRef}>
+      <div className="log" ref={logRef} onScroll={onScroll}>
         {logs.map((event) => (
           <div
             className={`log-line level-${event.level}`}
@@ -96,7 +112,7 @@ export function RunPanel({ status, logs, live, report, error }: Props) {
       </div>
 
       {report ? (
-        <div className="panel-section" style={{ borderTop: '1px solid var(--border)' }}>
+        <div className="run-report panel-section">
           <p className="panel-title">Steps</p>
           <div className="stack" style={{ marginBottom: 12 }}>
             {report.steps.map((step) => (
@@ -129,23 +145,23 @@ export function RunPanel({ status, logs, live, report, error }: Props) {
 
           {finalResult ? (
             <>
-              <p className="panel-title">Result</p>
-              <pre
-                style={{
-                  whiteSpace: 'pre-wrap',
-                  fontSize: 12.5,
-                  background: 'var(--surface-2)',
-                  padding: 10,
-                  borderRadius: 8,
-                  margin: 0,
-                  maxHeight: 260,
-                  overflow: 'auto',
-                }}
-              >
-                {typeof finalResult === 'string'
-                  ? finalResult
-                  : JSON.stringify(finalResult, null, 2)}
-              </pre>
+              <div className="row">
+                <p className="panel-title" style={{ margin: 0 }}>
+                  Result
+                </p>
+                <div className="spacer" />
+                {/* The answer is the thing someone came for, and it usually
+                    belongs somewhere else — a document, a ticket, a reply.
+                    Selecting it out of a scrolling <pre> is a fiddly way to
+                    end an otherwise finished job. */}
+                <button
+                  className="btn--link small"
+                  onClick={() => void navigator.clipboard?.writeText(resultText)}
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="run-result">{resultText}</pre>
             </>
           ) : null}
         </div>

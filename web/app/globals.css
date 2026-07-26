@@ -148,6 +148,14 @@ textarea {
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
+  /* Overrides `.panel`'s `overflow-y: auto`, and that override is the whole
+     fix. A flex column that scrolls as one block gives its children unbounded
+     height, so `.log { flex: 1 }` never constrained anything: the live output
+     grew the column instead of scrolling inside it, the Steps and Result got
+     shoved down past the fold, and the follow-the-tail scroll was aimed at an
+     element that was no longer the one scrolling. Bounded here, each region
+     below scrolls on its own. */
+  overflow: hidden;
 }
 
 .panel-section {
@@ -373,12 +381,38 @@ textarea {
 /* ---- run panel ------------------------------------------------------- */
 
 .log {
-  flex: 1;
+  /* Shrinkable, with a floor: while a run streams this is the interesting
+     region, and once a report arrives the answer matters more than the trace.
+     The floor stops it collapsing to nothing on a short window. */
+  flex: 1 1 40%;
+  min-height: 110px;
   overflow-y: auto;
   font-family: var(--mono);
   font-size: 12px;
   padding: 8px 12px;
+}
+
+/* Steps and Result, scrolling independently of the live trace above them. */
+.run-report {
+  flex: 1 1 60%;
   min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+/* The deliverable. Generous, monospaced, and scrollable on its own so a long
+   answer is readable without dragging the whole panel around. */
+.run-result {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 10px;
+  border-radius: 8px;
+  max-height: 46vh;
+  overflow: auto;
+  margin: 0;
 }
 
 .log-line {

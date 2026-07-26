@@ -411,6 +411,14 @@ def _recall(
     if not agent.memory.recall:
         return _Recalled()
 
+    # The objective is the search key, and it is user-written text of any
+    # length. Trimmed to what the contract accepts rather than allowed to fail
+    # validation mid-run: recalling against the first 2000 characters is a
+    # slightly worse search, while raising is a dead workflow.
+    query = memory_service.query_text(objective)
+    if not query:
+        return _Recalled()
+
     blocks: list[str] = []
     ids: list[str] = []
 
@@ -419,7 +427,7 @@ def _recall(
             tenant_id=agent.tenant_id,
             scope=MemoryScope.AGENT,
             scope_id=agent.id,
-            query=objective,
+            query=query,
             limit=agent.memory.recall_limit,
         )
     )
@@ -433,7 +441,7 @@ def _recall(
                 tenant_id=agent.tenant_id,
                 scope=MemoryScope.WORKFLOW,
                 scope_id=context.workflow_memory_scope,
-                query=objective,
+                query=query,
                 limit=agent.memory.recall_limit,
             )
         )

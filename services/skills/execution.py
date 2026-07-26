@@ -404,12 +404,19 @@ def recall_skill_memory(
     skill: SkillDefinition, query: str, context: SkillContext | None = None
 ) -> str:
     """What this skill has learned about being used well."""
+    # Through the shared helper rather than a local slice: the local slice here
+    # was correct and the one missing from the agent path was not, and nothing
+    # tied them together.
+    trimmed = memory_service.query_text(query)
+    if not trimmed:
+        return ""
+
     result = memory_service.recall(
         RecallRequest(
             tenant_id=skill.tenant_id,
             scope=MemoryScope.SKILL,
             scope_id=skill.id,
-            query=query[:2000],
+            query=trimmed,
             limit=SKILL_MEMORY_RECALL,
         )
     )

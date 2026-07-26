@@ -83,6 +83,73 @@ class TestRememberAndRecall:
         assert len(read("scheduling", limit=3).entries) == 3
 
 
+class TestALongObjectiveDoesNotKillTheRun:
+    """A recall query is a search key, and it comes from user-written text.
+
+    An agent whose objective ran past 2000 characters died mid-run with a
+    Pydantic `ValidationError` on `RecallRequest.query` — a spectacular way to
+    punish somebody for writing a detailed task description, and one that left
+    the workflow dead rather than the recall degraded.
+
+    The skill path already sliced the query to fit; the agent path did not, and
+    nothing tied the two together. `query_text` is now the one place that knows.
+    """
+
+    def test_the_limit_matches_the_contract(self):
+        """So the helper and the field cannot drift apart in silence."""
+        field = RecallRequest.model_fields["query"]
+        longest = next(
+            rule.max_length for rule in field.metadata if hasattr(rule, "max_length")
+        )
+
+        assert longest == memory.QUERY_LIMIT
+
+    def test_an_over_long_query_is_cut_to_fit(self):
+        trimmed = memory.query_text("x" * 5000)
+
+        assert len(trimmed) == memory.QUERY_LIMIT
+
+    def test_the_trimmed_query_is_accepted_by_the_contract(self):
+        """The point of the exercise: it must actually construct."""
+        request = RecallRequest(
+            tenant_id="tenant-a",
+            scope=MemoryScope.AGENT,
+            scope_id="agt_1",
+            query=memory.query_text("Review this task. " * 400),
+            limit=5,
+        )
+
+        assert len(request.query) <= memory.QUERY_LIMIT
+
+    def test_a_query_that_fits_is_left_alone_apart_from_whitespace(self):
+        assert memory.query_text("  find   the  thing ") == "find the thing"
+
+    def test_nothing_to_search_for_is_not_an_error(self):
+        """The contract also sets a *minimum* length, so a blank query would
+        raise just as hard. A caller with nothing to ask is not a fault."""
+        assert memory.query_text("   ") == ""
+
+    def test_an_agent_with_a_long_objective_recalls_rather_than_raising(self):
+        """End to end through the path that actually broke."""
+        from agents import runtime
+
+        write("Cite the source before repeating a claim.")
+        agent = runtime.AgentDefinition(
+            id="agt_1",
+            tenant_id="tenant-a",
+            name="Analyst",
+            role="You analyse things.",
+        )
+
+        recalled = runtime._recall(
+            agent,
+            "Review this task. " * 400,
+            runtime.AgentRunContext(tenant_id="tenant-a"),
+        )
+
+        assert "Cite the source" in recalled.text
+
+
 class TestDeduplication:
     def test_the_same_lesson_twice_is_stored_once(self):
         """Otherwise fifty runs produce fifty copies, and recall returns nothing
