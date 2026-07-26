@@ -377,6 +377,13 @@ the waiting request, so an outright refusal arrives as a hang. The platform
 therefore sends its own `initialize` first, with plain httpx, and quotes the
 answer.
 
+**MCP needs its library.** `mcp` is an optional extra, like Redis and
+PostgreSQL — the container image installs it, and a local `make install` gets it
+through the `dev` extra. If it is missing, the connect dialog says so up front
+and the gateway logs `MCP connector unavailable` at boot, because every server
+in the catalogue would otherwise fail identically for a reason that has nothing
+to do with any of them.
+
 **Each attempt is narrated in the gateway's log** — the pre-flight's verdict
 (`MCP <url>: pre-flight 400 application/json`) and each phase with its elapsed
 time (`finished completing the MCP handshake in 0.4s`). At startup the gateway

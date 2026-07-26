@@ -214,6 +214,12 @@ export interface MCPPolicy {
   /** Whether the built-in server list can be connected without the allow-list. */
   directory_enabled: boolean;
   directory_hosts: string[];
+  /**
+   * Whether the `mcp` package is installed at all. False means no server can
+   * be connected for reasons that have nothing to do with the server — worth
+   * saying before offering a catalogue where every entry would fail.
+   */
+  library_installed?: boolean;
 }
 
 /** One secret a listed server will ask for, and where to get it. */

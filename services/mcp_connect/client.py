@@ -187,6 +187,41 @@ def _failure(exc: BaseException, config: MCPServerConfig) -> MCPError:
     )
 
 
+#: What to say when the library that speaks MCP is not installed. Named as a
+#: deployment fault, because that is what it is and no amount of retrying,
+#: re-entering a token or raising a timeout will change it.
+NOT_INSTALLED = (
+    "this deployment cannot speak MCP: the 'mcp' package is not installed. "
+    "Nothing about the server, the URL or the credential is wrong. Install it "
+    "with the platform's `mcp` extra — `pip install -e \".[mcp]\"`, or rebuild "
+    "the container image, which installs it."
+)
+
+
+def _client_session() -> Any:
+    """The SDK's `ClientSession`, or a refusal that names the real problem.
+
+    Imported through a function so a missing library becomes an `MCPError` at a
+    point where somebody is listening, rather than a `ModuleNotFoundError` in a
+    task nobody is watching. The difference is not cosmetic: as a bare import it
+    read, from the browser, as the *server* having gone quiet for 65 seconds.
+    """
+    try:
+        from mcp import ClientSession  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - exercised via monkeypatch
+        raise MCPError(NOT_INSTALLED) from exc
+    return ClientSession
+
+
+def mcp_available() -> bool:
+    """Whether this deployment can connect to an MCP server at all."""
+    try:
+        _client_session()
+    except MCPError:
+        return False
+    return True
+
+
 def _target(config: MCPServerConfig) -> str:
     """What was being reached, for an error a person has to act on.
 
@@ -578,8 +613,14 @@ async def _own_connection(
     The transport context managers are entered and exited here and nowhere else.
     Everything else — `call_tool`, `list_tools` — is a plain method call on the
     session object and is safe to make from another task.
+
+    **Nothing in this function may raise before `ready` is resolved.** That is
+    not a style rule. The import below used to sit above the `try`, and in a
+    deployment where the MCP library was missing it raised `ModuleNotFoundError`
+    into a bare task: `ready` was never set, nobody heard the exception, and a
+    one-line packaging mistake was reported to the user as a 65-second timeout
+    on GitHub's server — for days.
     """
-    from mcp import ClientSession  # noqa: PLC0415
 
     async def transport_fault(message: Any) -> None:
         """Fail the connection when the transport reports a fault as a message.
@@ -615,6 +656,9 @@ async def _own_connection(
     deadline = loop.time() + CONNECT_TIMEOUT
 
     try:
+        progress.append("loading the MCP client library")
+        ClientSession = _client_session()  # noqa: N806 - it is a class
+
         # Before the SDK, so a refusal is reported as a refusal rather than
         # disappearing into a background task.
         progress.append("sending the pre-flight request")
@@ -658,6 +702,19 @@ async def _own_connection(
         elif not isinstance(exc, asyncio.CancelledError):
             logger.warning("MCP connection ended: %s", exc)
             raise
+    finally:
+        # The backstop for the rule in the docstring. Anything that reaches here
+        # with `ready` unresolved is a path that escaped every handler above,
+        # and the caller must still be told — waiting out the whole budget to be
+        # told nothing is how a missing package impersonated a slow server.
+        if not ready.done():
+            ready.set_exception(
+                MCPError(
+                    f"the connection to {_target(config)} ended while "
+                    f"{progress[-1]}, without saying why — please report this "
+                    "message."
+                )
+            )
 
 
 #: How long past the shared budget the watchdog waits before naming the stage

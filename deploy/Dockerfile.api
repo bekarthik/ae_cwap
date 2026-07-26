@@ -11,7 +11,11 @@ COPY pyproject.toml ./
 COPY packages ./packages
 COPY services ./services
 
-RUN pip install --no-cache-dir -e ".[queue,llm,postgres]"
+# `mcp` belongs here for the same reason the others do: the image ships the
+# feature, so the image needs the library. Leaving it out was invisible — the
+# connector imports it lazily, so the app booted, the catalogue rendered, and
+# only *connecting* failed, as a timeout rather than as a missing import.
+RUN pip install --no-cache-dir -e ".[queue,llm,postgres,mcp]"
 
 # The application never needs to write to its own source tree.
 RUN useradd --create-home --uid 10001 cwap && chown -R cwap:cwap /app

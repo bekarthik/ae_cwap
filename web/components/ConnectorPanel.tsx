@@ -304,6 +304,20 @@ function ConnectDialog({
           nothing else about a workflow changes.
         </p>
 
+        {/* Said before the catalogue, not after a failed attempt. Without the
+            library every entry below fails identically and for a reason that
+            has nothing to do with the server, the URL or the token — which is
+            the most expensive kind of error to debug from the outside. */}
+        {policy.library_installed === false ? (
+          <div className="notice notice--error">
+            <strong>This deployment cannot speak MCP yet.</strong> The{' '}
+            <code>mcp</code> package is not installed, so no server here can be
+            connected — nothing about the servers below is wrong. Rebuild the
+            container image, or install the platform&apos;s <code>mcp</code>{' '}
+            extra.
+          </div>
+        ) : null}
+
         {!manual ? (
           <Catalogue known={known} onPick={pick} onBlank={startBlank} />
         ) : null}

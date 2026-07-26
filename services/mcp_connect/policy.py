@@ -115,6 +115,7 @@ def _assert_host_permitted(url: str) -> None:
 def describe() -> dict[str, object]:
     """What this deployment permits, so the UI can say so before a user tries."""
     from mcp_connect import directory  # noqa: PLC0415 - avoids an import cycle
+    from mcp_connect.client import mcp_available  # noqa: PLC0415 - same cycle
 
     return {
         "stdio_enabled": bool(allowed_commands()),
@@ -122,4 +123,8 @@ def describe() -> dict[str, object]:
         "allowed_hosts": sorted(get_settings().http_allowed_hosts),
         "directory_enabled": directory.enabled(),
         "directory_hosts": sorted(directory.hosts()),
+        # Whether the library that speaks the protocol is installed at all. The
+        # dialog can then say so instead of offering a catalogue of servers that
+        # every one of which will fail — which is what it did.
+        "library_installed": mcp_available(),
     }

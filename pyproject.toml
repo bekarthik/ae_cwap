@@ -25,7 +25,8 @@ dependencies = [
 queue = ["celery>=5.4", "redis>=5.0"]           # Redis/Celery instead of the in-memory broker
 llm = ["anthropic>=0.116"]                       # real model calls instead of the stub provider
 postgres = ["psycopg[binary]>=3.1"]              # PostgreSQL instead of SQLite
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+mcp = ["mcp>=1.28"]                              # connecting MCP servers; tools become skills
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mcp>=1.28"]
 
 [tool.setuptools.packages.find]
 where = ["packages", "services"]

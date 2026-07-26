@@ -100,13 +100,20 @@ async def lifespan(app: FastAPI):
     # this line.
     from mcp_connect import client as mcp_client  # noqa: PLC0415 - avoid cycle at import
 
-    logger.info(
-        "MCP connector ready — pre-flight on; reach %.0fs, handshake+listing %.0fs, "
-        "tool call %.0fs",
-        mcp_client.REACH_TIMEOUT,
-        mcp_client.CONNECT_TIMEOUT,
-        mcp_client.CALL_TIMEOUT,
-    )
+    if mcp_client.mcp_available():
+        logger.info(
+            "MCP connector ready — pre-flight on; reach %.0fs, handshake+listing %.0fs, "
+            "tool call %.0fs",
+            mcp_client.REACH_TIMEOUT,
+            mcp_client.CONNECT_TIMEOUT,
+            mcp_client.CALL_TIMEOUT,
+        )
+    else:
+        # At boot, not on the first failed connection. The connector imports the
+        # library lazily, so without this the whole platform starts perfectly
+        # and only *connecting* fails — which is exactly how a missing package
+        # spent days impersonating an unreachable server.
+        logger.error("MCP connector unavailable — %s", mcp_client.NOT_INSTALLED)
 
     # A browser watching a run holds its WebSocket to *this* process, while the
     # events are emitted wherever the worker runs. In a Redis deployment that is
