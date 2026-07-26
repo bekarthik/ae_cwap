@@ -389,14 +389,30 @@ async def _phase(
     budget: float,
     config: MCPServerConfig,
 ) -> Any:
-    """Run one phase of the connection under its own share of the budget."""
+    """Run one phase of the connection under its own share of the budget.
+
+    Logged either way. Somebody debugging a connection from a container has the
+    container's log and little else, and "the handshake took 0.4s, the listing
+    never finished" is the fact that decides what to try next — while an error
+    string in a browser they may not be looking at is not.
+    """
     what, why = phase
+    loop = asyncio.get_running_loop()
+    started = loop.time()
     try:
-        return await asyncio.wait_for(awaitable, max(budget, 1.0))
+        result = await asyncio.wait_for(awaitable, max(budget, 1.0))
     except (TimeoutError, asyncio.TimeoutError) as exc:
+        logger.warning(
+            "MCP %s: stalled while %s after %.1fs", _target(config), what, loop.time() - started
+        )
         raise MCPError(
             f"{_target(config)} stopped responding while {what}. {why}"
         ) from exc
+
+    logger.info(
+        "MCP %s: finished %s in %.1fs", _target(config), what, loop.time() - started
+    )
+    return result
 
 
 async def _own_connection(
@@ -452,10 +468,25 @@ async def _own_connection(
             loop = asyncio.get_running_loop()
             deadline = loop.time() + CONNECT_TIMEOUT
 
-            await _phase(HANDSHAKE, session.initialize(), deadline - loop.time(), config)
-            listing = await _phase(
-                LISTING, session.list_tools(), deadline - loop.time(), config
-            )
+            try:
+                await _phase(HANDSHAKE, session.initialize(), deadline - loop.time(), config)
+                listing = await _phase(
+                    LISTING, session.list_tools(), deadline - loop.time(), config
+                )
+            except BaseException as exc:
+                # Answer the caller *before* unwinding, not after.
+                #
+                # Closing the transport can itself block for a long time — the
+                # SDK's task group waits for its children, and one of them may be
+                # parked in a read with the session's own read timeout. Leaving
+                # `ready` unset until the `async with` has finished exiting meant
+                # a phase timeout at 60s was still undelivered when the outer
+                # wall fired at 70, so the user got the generic "did not respond"
+                # instead of the sentence naming which phase stalled. The
+                # diagnosis existed and was stuck behind a teardown.
+                if not ready.done():
+                    ready.set_exception(exc)
+                raise
 
             if not ready.done():
                 ready.set_result((session, _to_tools(listing)))

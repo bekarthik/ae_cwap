@@ -217,6 +217,70 @@ class TestTheTransportGetsBothDeadlines:
         assert recorded["sse_read_timeout"] >= mcp_client.CONNECT_TIMEOUT
 
 
+class TestTheDiagnosisArrivesBeforeTheTeardown:
+    """A slow close must not swallow the reason.
+
+    Reported from a Docker deployment: `did not respond within 70s` — the outer
+    wall (`CONNECT_TIMEOUT + GRACE`), carrying the generic sentence, when the
+    phase deadline at 60s should have fired first with a specific one.
+
+    The cause was ordering. `ready.set_exception` sat in the handler *outside*
+    the `async with`, so it ran only once the transport had finished closing —
+    and closing waits on the SDK's task group, whose children may be parked in a
+    read with the session's own read timeout. The phase error was raised on
+    time, then queued behind a teardown that outlasted the caller's patience.
+
+    This is asserted with a transport whose close blocks on an event the test
+    controls, because "teardown is slow" is not something a real server can be
+    asked to do on demand.
+    """
+
+    @pytest.fixture
+    def slow_to_close(self, monkeypatch):
+        """A transport that hands over dead streams and then refuses to close."""
+        import anyio
+
+        released = anyio.Event()
+
+        async def _open(stack, config, credentials):
+            send_to_reader, read_stream = anyio.create_memory_object_stream(10)
+            write_stream, _ = anyio.create_memory_object_stream(10)
+
+            class Blocks:
+                async def __aenter__(self):
+                    return None
+
+                async def __aexit__(self, *exc):
+                    await released.wait()
+                    return False
+
+            await stack.enter_async_context(Blocks())
+            return read_stream, write_stream
+
+        monkeypatch.setattr(mcp_client, "_open_transport", _open)
+        yield released
+        released.set()
+
+    def test_the_phase_message_beats_a_wedged_close(self, monkeypatch, slow_to_close):
+        monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 2.0)
+
+        with pytest.raises(MCPError) as raised:
+            mcp_client.get_client().probe(http("http://127.0.0.1:9/mcp"), {})
+
+        assert "stopped responding while" in str(raised.value)
+        assert "did not respond within" not in str(raised.value)
+
+    def test_the_caller_is_answered_within_the_budget(self, monkeypatch, slow_to_close):
+        """Not merely the right message — the right message *on time*."""
+        monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 2.0)
+        started = time.monotonic()
+
+        with pytest.raises(MCPError):
+            mcp_client.get_client().probe(http("http://127.0.0.1:9/mcp"), {})
+
+        assert time.monotonic() - started < mcp_client.CONNECT_TIMEOUT + mcp_client.GRACE
+
+
 class TestTheDeadlinesAreOrdered:
     def test_reaching_is_bounded_more_tightly_than_answering(self):
         """So the transport's specific error arrives before the blanket one.
