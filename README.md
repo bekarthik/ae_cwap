@@ -366,9 +366,16 @@ and none of the four remedies is the same:
 | What happened | What it says | What to do |
 | --- | --- | --- |
 | The host never answers a SYN | *could not reach the host* (10s) | Fix the URL, or the deployment's egress |
+| The server refuses us | *refused the connection: HTTP 400. It said: …* | Whatever the server said — it is quoted verbatim |
 | It answers with a page, not MCP | *that URL answered, but not with MCP* | It is a login page, a proxy, or the wrong URL |
 | The handshake stalls | *stopped responding while completing the MCP handshake* | Probably not an MCP endpoint; or raise `CWAP_MCP_TIMEOUT` |
 | The handshake works, listing stalls | *stopped responding while listing its tools* | Your setup is fine — see below |
+
+The second row exists because the MCP client library cannot report it. A
+server's `4xx` is raised inside a background task where nothing delivers it to
+the waiting request, so an outright refusal arrives as a hang. The platform
+therefore sends its own `initialize` first, with plain httpx, and quotes the
+answer.
 
 That last row is a known defect in the MCP client library rather than anything
 about your server ([python-sdk#1941](https://github.com/modelcontextprotocol/python-sdk/issues/1941)):

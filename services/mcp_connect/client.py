@@ -399,20 +399,138 @@ async def _phase(
     what, why = phase
     loop = asyncio.get_running_loop()
     started = loop.time()
-    try:
-        result = await asyncio.wait_for(awaitable, max(budget, 1.0))
-    except (TimeoutError, asyncio.TimeoutError) as exc:
+
+    # `asyncio.wait`, not `asyncio.wait_for`. `wait_for` cancels the inner task
+    # and then *awaits the cancellation*, so it only honours its own deadline if
+    # the thing it is cancelling can be cancelled promptly. A request wedged
+    # inside the SDK's anyio task group cannot: the group is suspended at the
+    # generator yield we are still inside, so the cancellation never completes
+    # and `wait_for` never returns. That is why a 60s phase deadline produced no
+    # error at all and the 70s outer wall reported the generic one.
+    #
+    # `wait` returns when the timeout elapses whatever the task is doing. The
+    # cancel below is a request, not something to wait on.
+    task = asyncio.ensure_future(awaitable)
+    done, _ = await asyncio.wait({task}, timeout=max(budget, 1.0))
+
+    if task not in done:
+        task.cancel()
         logger.warning(
             "MCP %s: stalled while %s after %.1fs", _target(config), what, loop.time() - started
         )
-        raise MCPError(
-            f"{_target(config)} stopped responding while {what}. {why}"
-        ) from exc
+        raise MCPError(f"{_target(config)} stopped responding while {what}. {why}")
 
     logger.info(
         "MCP %s: finished %s in %.1fs", _target(config), what, loop.time() - started
     )
-    return result
+    return task.result()
+
+
+#: How long to wait for the pre-flight answer. Short: this is one small POST to
+#: a server that either wants to talk to us or does not.
+PREFLIGHT_READ = _seconds("CWAP_MCP_PREFLIGHT_TIMEOUT", 20.0)
+
+#: Content types an MCP endpoint may answer with.
+_MCP_TYPES = ("application/json", "text/event-stream")
+
+
+async def _preflight(config: MCPServerConfig, credentials: dict, budget: float) -> None:
+    """Ask the endpoint to initialise, ourselves, before handing it to the SDK.
+
+    The SDK does not surface a server's rejection. `_handle_post_request` calls
+    `raise_for_status()` inside a task started with `tg.start_soon`, so a 400
+    lands in a background task while `initialize()` goes on waiting for a reply
+    on a memory stream that will never receive one. The request is dead and
+    nothing says so — the transport crash never reaches the caller
+    (modelcontextprotocol/python-sdk#1941, google/adk-python#4901).
+
+    That is how a plain, immediate "400 Bad Request" from a server became "did
+    not respond within 70s" here. The server answered in milliseconds; the
+    answer had nowhere to go.
+
+    So we ask first, with httpx directly, and report what comes back. The same
+    reasoning the LLM proxy uses for owning its own requests: when the failures
+    have to be actionable, the error mapping is the part worth owning.
+
+    Only speaks up about answers that are unambiguously a refusal — a 4xx/5xx,
+    or a body that is not MCP. Anything else falls through to the SDK, so a
+    server this probe cannot judge is still given its chance.
+
+    Spends from the *connection's* budget rather than having one of its own: a
+    silent server would otherwise be waited out twice, once here and once in the
+    handshake, and the pair would overrun the wall that is supposed to be a
+    backstop.
+    """
+    if config.transport is not MCPTransport.HTTP or not config.url:
+        return
+
+    import httpx  # noqa: PLC0415
+    from mcp.types import LATEST_PROTOCOL_VERSION  # noqa: PLC0415
+
+    headers = {str(key): str(value) for key, value in credentials.items()}
+    # The Streamable HTTP transport requires a client to accept both, and a
+    # server is within its rights to refuse a request that does not say so.
+    headers["Accept"] = "application/json, text/event-stream"
+    headers["Content-Type"] = "application/json"
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": LATEST_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "cwap", "version": "1"},
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                min(REACH_TIMEOUT, max(budget, 1.0)),
+                read=min(PREFLIGHT_READ, max(budget, 1.0)),
+            ),
+            follow_redirects=True,
+        ) as probe:
+            answer = await probe.post(config.url, json=body, headers=headers)
+    except httpx.HTTPError as exc:
+        # A transport fault, which the SDK *does* report well. Let it try, so
+        # this probe can never be the reason a working server is refused.
+        logger.info("MCP %s: pre-flight could not complete (%s)", _target(config), exc)
+        return
+
+    logger.info(
+        "MCP %s: pre-flight %s %s",
+        _target(config),
+        answer.status_code,
+        answer.headers.get("content-type", "?"),
+    )
+
+    if answer.status_code >= 400:
+        raise MCPError(
+            f"{_target(config)} refused the connection: HTTP {answer.status_code}. "
+            f"It said: {_said(answer)}"
+        )
+
+    kind = answer.headers.get("content-type", "").split(";")[0].strip().lower()
+    if kind and not any(kind.startswith(good) for good in _MCP_TYPES):
+        raise MCPError(
+            f"that URL answered, but not with MCP (content type {kind}). An MCP "
+            "endpoint replies as JSON or as an event stream; HTML usually means a "
+            "login page, a proxy sitting in front of the host, or simply a URL "
+            "that is not an MCP endpoint"
+        )
+
+
+def _said(answer: Any) -> str:
+    """What the server put in the body, trimmed to something quotable."""
+    try:
+        text = " ".join(answer.text.split())
+    except Exception:  # noqa: BLE001 - a body we cannot read is not a crash
+        return "(an unreadable body)"
+    if not text:
+        return "(nothing)"
+    return text[:300] + ("…" if len(text) > 300 else "")
 
 
 async def _own_connection(
@@ -455,18 +573,23 @@ async def _own_connection(
         # longer trustworthy, so drop it and let the next call reconnect.
         stop.set()
 
+    # One budget for the whole connection, opened here and drawn down by the
+    # pre-flight and then by each phase. Started before the pre-flight, not
+    # after, or a silent server gets waited out twice and the pair overruns the
+    # wall that exists to catch exactly that.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + CONNECT_TIMEOUT
+
     try:
+        # Before the SDK, so a refusal is reported as a refusal rather than
+        # disappearing into a background task.
+        await _preflight(config, credentials, deadline - loop.time())
+
         async with AsyncExitStack() as stack:
             read, write = await _open_transport(stack, config, credentials)
             session = await stack.enter_async_context(
                 ClientSession(read, write, message_handler=transport_fault)
             )
-
-            # One budget for the whole connection, spent across two phases that
-            # are timed separately. Which of the two stalled is the single most
-            # useful thing an error can say here — see `_phase`.
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + CONNECT_TIMEOUT
 
             try:
                 await _phase(HANDSHAKE, session.initialize(), deadline - loop.time(), config)

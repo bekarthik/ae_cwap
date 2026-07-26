@@ -28,6 +28,7 @@ would have to be told which kind to imitate.
 
 from __future__ import annotations
 
+import asyncio
 import socket
 import threading
 import time
@@ -165,8 +166,6 @@ class TestAQuietServerSaysSomethingElse:
         """`Future.cancel()` is a no-op once a coroutine has started, so every
         failed attempt used to leave its task — and its socket — alive for the
         life of the process."""
-        import asyncio
-
         monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 2.0)
 
         with pytest.raises(MCPError):
@@ -279,6 +278,145 @@ class TestTheDiagnosisArrivesBeforeTheTeardown:
             mcp_client.get_client().probe(http("http://127.0.0.1:9/mcp"), {})
 
         assert time.monotonic() - started < mcp_client.CONNECT_TIMEOUT + mcp_client.GRACE
+
+
+class TestATimeoutFiresOnSomethingThatIgnoresCancellation:
+    """The deadline cannot depend on the stuck thing agreeing to stop.
+
+    `asyncio.wait_for` cancels the inner task and then *awaits the
+    cancellation*, so it honours its own deadline only when the task can be
+    cancelled promptly. A request wedged inside the SDK's anyio task group
+    cannot be: the group is suspended at the generator yield we are still
+    inside, so the cancellation never completes and `wait_for` never returns.
+
+    That is why a 60s phase deadline produced no error at all and the 70s outer
+    wall reported the generic one — twice, to a user who had already been told
+    the specific message was coming.
+    """
+
+    @pytest.fixture
+    def uncancellable(self, monkeypatch):
+        """A handshake that hangs and refuses to be cancelled, as a wedged
+        transport does."""
+        import anyio
+
+        async def _open(stack, config, credentials):
+            send, read_stream = anyio.create_memory_object_stream(10)
+            write_stream, _ = anyio.create_memory_object_stream(10)
+            return read_stream, write_stream
+
+        class Immovable:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def initialize(self):
+                while True:
+                    try:
+                        await asyncio.sleep(3600)
+                    except asyncio.CancelledError:
+                        # Swallowing cancellation is the whole point: this is
+                        # what a task parked inside a wedged cancel scope looks
+                        # like from outside.
+                        continue
+
+            async def list_tools(self):  # pragma: no cover - never reached
+                return None
+
+        monkeypatch.setattr(mcp_client, "_open_transport", _open)
+        monkeypatch.setattr(
+            mcp_client, "_preflight", lambda config, creds, budget: _noop()
+        )
+        yield Immovable
+
+    def test_the_phase_deadline_still_fires(self, monkeypatch, uncancellable):
+        monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 2.0)
+        monkeypatch.setattr("mcp.ClientSession", lambda *a, **k: uncancellable())
+
+        started = time.monotonic()
+        with pytest.raises(MCPError) as raised:
+            mcp_client.get_client().probe(http("http://127.0.0.1:9/mcp"), {})
+
+        assert "stopped responding while" in str(raised.value)
+        assert "did not respond within" not in str(raised.value)
+        assert time.monotonic() - started < mcp_client.CONNECT_TIMEOUT + mcp_client.GRACE
+
+
+async def _noop():
+    return None
+
+
+class TestARefusalIsReportedAsARefusal:
+    """A server that says no in milliseconds must not read as one that went quiet.
+
+    GitHub's remote MCP server answers some clients with `400 Bad Request`. The
+    SDK calls `raise_for_status()` inside a task started with `tg.start_soon`,
+    so that error lands in a background task while `initialize()` waits on a
+    memory stream nothing will ever write to. The request is dead and nothing
+    says so, which is how an immediate refusal became "did not respond within
+    70s".
+    """
+
+    @pytest.fixture
+    def refusing(self):
+        """A server that rejects the handshake the way a real one does."""
+        import json
+
+        from mcp_fixture_post_only import free_port
+
+        port = free_port()
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", port))
+        listener.listen(8)
+
+        def serve() -> None:
+            while True:
+                try:
+                    connection, _ = listener.accept()
+                except OSError:
+                    return
+                connection.recv(65535)
+                body = json.dumps({"error": "protocol version not supported"}).encode()
+                connection.sendall(
+                    b"HTTP/1.1 400 Bad Request\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                    b"Connection: close\r\n\r\n" + body
+                )
+                connection.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        try:
+            yield f"http://127.0.0.1:{port}/mcp/"
+        finally:
+            listener.close()
+
+    def test_it_fails_immediately(self, monkeypatch, refusing):
+        monkeypatch.setattr(mcp_client, "CONNECT_TIMEOUT", 30.0)
+        started = time.monotonic()
+
+        with pytest.raises(MCPError):
+            mcp_client.get_client().probe(http(refusing), {})
+
+        assert time.monotonic() - started < 5.0
+
+    def test_it_reports_the_status(self, refusing):
+        with pytest.raises(MCPError, match="HTTP 400"):
+            mcp_client.get_client().probe(http(refusing), {})
+
+    def test_it_quotes_what_the_server_said(self, refusing):
+        """The server's own words are the actionable part — ours are a guess."""
+        with pytest.raises(MCPError, match="protocol version not supported"):
+            mcp_client.get_client().probe(http(refusing), {})
+
+    def test_it_is_not_described_as_silence(self, refusing):
+        with pytest.raises(MCPError) as raised:
+            mcp_client.get_client().probe(http(refusing), {})
+
+        assert "did not respond" not in str(raised.value)
+        assert "stopped responding" not in str(raised.value)
 
 
 class TestTheDeadlinesAreOrdered:

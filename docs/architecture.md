@@ -609,6 +609,43 @@ equal to the SDK's own 30s default, the two fired together and the vaguer
 message won — so a host that could not be reached and a server that had gone
 quiet produced the same sentence after the same thirty seconds.
 
+Ordering the deadlines was necessary and not sufficient, and the two further
+faults are worth keeping written down because both make a deadline *look* set
+while doing nothing:
+
+* **`asyncio.wait_for` awaits the cancellation it requests.** It honours its own
+  deadline only when the task can be cancelled promptly, and a request wedged
+  inside the SDK's anyio task group cannot be — the group is suspended at the
+  generator yield we are still inside, so the cancellation never completes and
+  `wait_for` never returns. `_phase` uses `asyncio.wait`, which returns when the
+  timeout elapses whatever the task is doing, and treats the cancel as a request
+  rather than something to wait on.
+* **Reporting after teardown is reporting too late.** `ready.set_exception` used
+  to sit outside the `async with`, so it ran only once the transport had closed
+  — and closing waits on that same task group. The phase error was raised on
+  time and queued behind a teardown that outlasted the caller.
+
+Together those two are why a 60s phase deadline produced no error at all and the
+70s outer wall reported the generic one.
+
+Before any of that, the platform sends **its own `initialize`** with plain httpx
+and reports whatever comes back. That is not belt-and-braces; it is the only way
+to see a refusal at all. `_handle_post_request` calls `raise_for_status()` inside
+a task started with `tg.start_soon`, so a `400` lands in a background task while
+`initialize()` goes on waiting for a reply on a memory stream nothing will ever
+write to — the transport dies and the caller is never told
+([python-sdk#1941](https://github.com/modelcontextprotocol/python-sdk/issues/1941),
+[adk-python#4901](https://github.com/google/adk-python/issues/4901)). GitHub's
+remote server answers some clients with exactly that `400`
+([github-mcp-server#598](https://github.com/github/github-mcp-server/issues/598)),
+which is how an immediate, articulate refusal reached a user as "did not respond
+within 70s".
+
+The pre-flight only speaks up about answers that are unambiguously a refusal — a
+4xx/5xx, or a body that is not MCP. A transport fault falls through to the SDK,
+which reports those well, so this probe can never be the reason a working server
+is turned away.
+
 The two content faults are the interesting ones, because neither is a timeout:
 
 * **Not MCP at all.** The SDK reports an unusable content type by *sending a
